@@ -25,15 +25,19 @@ const ffmpegCoreDir = path.join(packageDir("@ffmpeg/core"), "dist")
 
 // Cross-origin isolation is required for SharedArrayBuffer, which ffmpeg.wasm needs
 // for its threads. Must be present on *every* response.
-// @janelia/web-h5j-loader tests `src instanceof global.File` and @ffmpeg/ffmpeg reads
-// `process.env.NODE_ENV` at module scope. Both are webpack-isms that Vite does not
-// shim. The top-level `define` below does NOT reach prebundled dependencies -- the
-// dep optimizer is a separate esbuild pass -- so the same substitutions have to be
-// declared twice. Without the esbuild copy, passing a File throws
+// @janelia/web-h5j-loader tests `src instanceof global.File`, and `global` is a
+// webpack-ism Vite does not shim. This has to be declared twice: the top-level
+// `define` does NOT reach prebundled dependencies, because the dep optimizer is a
+// separate esbuild pass. Without the esbuild copy, passing a File throws
 // "global is not defined" at runtime while everything typechecks and builds fine.
+//
+// Do NOT add `process.env.NODE_ENV` here. @ffmpeg/ffmpeg does read it at module
+// scope, but Vite's own optimizer already substitutes it, and pinning it to
+// "production" collapses React's `jsx-dev-runtime` to its production stub -- which
+// sets `exports.jsxDEV = void 0` on purpose. Vite's dev JSX transform still emits
+// jsxDEV calls, so the app dies with "jsxDEV is not a function" and a black screen.
 const shims = {
   global: "globalThis",
-  "process.env.NODE_ENV": '"production"',
 }
 
 const crossOriginIsolation = {
