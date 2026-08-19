@@ -13,6 +13,7 @@ import {
   resolveDims,
 } from "@/lib/h5j"
 import { buildViewerState } from "@/lib/ngstate"
+import { describeProbe, probeDataset } from "@/lib/verify"
 import { syntheticVolume } from "@/lib/synthetic"
 import { clearAllDatasets, requestPersist, storageEstimate } from "@/lib/opfs"
 import type {
@@ -206,6 +207,17 @@ export function App() {
             setWarnings([...collectedWarnings])
           }
         }
+      }
+
+      // Probe the finished dataset over HTTP, exactly as Neuroglancer will. A level
+      // whose chunks 404 renders as empty black with no error, and chunk-worker
+      // requests are not reliably visible in the network panel, so without this the
+      // failure is indistinguishable from "the data is just dark".
+      const probe = await probeDataset(location.origin, id)
+      setChannelStats((previous) => [...previous, ...describeProbe(probe)])
+      if (probe.problems.length > 0) {
+        collectedWarnings.push(...probe.problems)
+        setWarnings([...collectedWarnings])
       }
 
       setPhase("done")
