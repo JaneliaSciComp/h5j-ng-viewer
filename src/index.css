@@ -1,3 +1,8 @@
+/* Neuroglancer ships its own stylesheet and renders unusable without it -- the panel
+   layout, the canvas sizing and every control come from here. Must be imported before
+   our own rules so they can override it. */
+@import "@janelia/react-neuroglancer/style.css";
+
 * {
   box-sizing: border-box;
 }
