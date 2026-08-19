@@ -74,11 +74,7 @@ export interface LevelIndex {
   chunkBytes: number
 }
 
-export type IngestPhase =
-  | "chunking"
-  | "downsampling"
-  | "writing"
-  | "done"
+export type IngestPhase = "chunking" | "downsampling" | "writing" | "done"
 
 /** Main thread -> ingest worker. `data` is transferred, not copied. */
 export interface IngestRequest {

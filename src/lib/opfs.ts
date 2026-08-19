@@ -1,0 +1,234 @@
+// Thin helpers over the Origin Private File System (OPFS). Two callers:
+//
+// - The ingest worker (src/ingest.worker.ts) writes hundreds of MB of packed chunk
+//   data and needs createSyncAccessHandle() -- synchronous, worker-only, and much
+//   faster than the async createWritable() path (see openPackedWriter below).
+// - The main thread writes a handful of tiny JSON files and reads storage estimates.
+//
+// The service worker (public/sw.js) reads this data too, but it is dependency-free
+// plain JS and re-derives paths itself; it does not import from here.
+
+import { ZARR_ROOT } from "@/lib/paths"
+
+// This project's tsconfig.json lib list includes "WebWorker" alongside "DOM", which
+// is what pulls in FileSystemSyncAccessHandle / FileSystemFileHandle.createSyncAccessHandle
+// (lib.webworker.d.ts) -- lib.dom.d.ts alone does not declare them. If that lib entry
+// is ever dropped, redeclare a minimal FileSystemSyncAccessHandle-shaped interface
+// here rather than reaching for `any` (@typescript-eslint/no-explicit-any is an ERROR
+// in this repo).
+
+// TypeScript also has no async-iteration types for FileSystemDirectoryHandle
+// (`for await (const name of dir.keys())` is real per MDN but untyped). Declare the
+// minimal shape we use.
+/** FileSystemDirectoryHandle is an async-iterable of [name, handle] pairs at runtime. */
+interface FileSystemDirectoryHandleIterable {
+  keys(): AsyncIterableIterator<string>
+}
+
+function isNotFound(err: unknown): boolean {
+  return err instanceof DOMException && err.name === "NotFoundError"
+}
+
+function splitPath(path: string): { dir: string; name: string } {
+  const parts = path.split("/").filter(Boolean)
+  const name = parts.pop()
+  if (!name) throw new Error(`invalid OPFS path: ${path}`)
+  return { dir: parts.join("/"), name }
+}
+
+/** Resolve (creating if asked) the directory for a `a/b/c` path. */
+export async function resolveDir(
+  path: string,
+  create: boolean
+): Promise<FileSystemDirectoryHandle | null> {
+  const root = await navigator.storage.getDirectory()
+  let dir = root
+  for (const part of path.split("/").filter(Boolean)) {
+    try {
+      dir = await dir.getDirectoryHandle(part, { create })
+    } catch (err) {
+      if (isNotFound(err)) return null
+      throw err
+    }
+  }
+  return dir
+}
+
+export async function writeJson(path: string, value: unknown): Promise<void> {
+  const { dir, name } = splitPath(path)
+  const dirHandle = await resolveDir(dir, true)
+  if (!dirHandle) throw new Error(`cannot resolve directory for ${path}`)
+  const fileHandle = await dirHandle.getFileHandle(name, { create: true })
+  const writable = await fileHandle.createWritable()
+  await writable.write(JSON.stringify(value))
+  await writable.close()
+}
+
+export async function readJson<T>(path: string): Promise<T | null> {
+  const { dir, name } = splitPath(path)
+  const dirHandle = await resolveDir(dir, false)
+  if (!dirHandle) return null
+  try {
+    const fileHandle = await dirHandle.getFileHandle(name)
+    const file = await fileHandle.getFile()
+    return JSON.parse(await file.text()) as T
+  } catch (err) {
+    if (isNotFound(err)) return null
+    throw err
+  }
+}
+
+/** True when the path exists as a file. */
+export async function fileExists(path: string): Promise<boolean> {
+  const { dir, name } = splitPath(path)
+  const dirHandle = await resolveDir(dir, false)
+  if (!dirHandle) return false
+  try {
+    await dirHandle.getFileHandle(name)
+    return true
+  } catch (err) {
+    if (isNotFound(err)) return false
+    throw err
+  }
+}
+
+/**
+ * Sequential writer for a level's packed chunk file. Chunks are appended in
+ * chunk-grid order; the service worker recovers each chunk's offset by arithmetic,
+ * so this writer must never reorder or pad between chunks.
+ */
+export interface PackedWriter {
+  /** Append bytes at the current position. */
+  write(bytes: ArrayBufferView): void
+  /** Total bytes written so far. */
+  readonly bytesWritten: number
+  close(): Promise<void>
+}
+
+/**
+ * View the same memory as a Uint8Array without copying. Cast through `ArrayBuffer`:
+ * ArrayBufferView's `.buffer` is typed as the more general `ArrayBufferLike` (it
+ * could be a SharedArrayBuffer), but our callers only ever pass plain ArrayBuffers.
+ */
+function asBytes(view: ArrayBufferView): Uint8Array<ArrayBuffer> {
+  return new Uint8Array(
+    view.buffer as ArrayBuffer,
+    view.byteOffset,
+    view.byteLength
+  )
+}
+
+export async function openPackedWriter(path: string): Promise<PackedWriter> {
+  const { dir, name } = splitPath(path)
+  const dirHandle = await resolveDir(dir, true)
+  if (!dirHandle) throw new Error(`cannot resolve directory for ${path}`)
+  const fileHandle = await dirHandle.getFileHandle(name, { create: true })
+
+  // createSyncAccessHandle() only exists inside a worker. It is the whole reason
+  // D2 packs chunks into one file per level: it turns ~10k open/write/close
+  // round-trips into one open plus a tight loop of synchronous writes. Always
+  // preferred; the ingest worker's hot loop depends on this branch being taken.
+  //
+  // Feature-detect via `typeof ... === "function"`, not `"createSyncAccessHandle"
+  // in fileHandle`: the WebWorker lib declares the method as always-present (not
+  // optional), so TS would narrow the false branch of an `in` check to `never` and
+  // reject the main-thread fallback below as dead code.
+  if (typeof fileHandle.createSyncAccessHandle === "function") {
+    const handle = await fileHandle.createSyncAccessHandle()
+    let bytesWritten = 0
+    return {
+      write(bytes) {
+        const view = asBytes(bytes)
+        handle.write(view, { at: bytesWritten })
+        bytesWritten += view.byteLength
+      },
+      get bytesWritten() {
+        return bytesWritten
+      },
+      async close() {
+        handle.flush()
+        handle.close()
+      },
+    }
+  }
+
+  // Fallback for the main thread, which has no sync access handle. write() must
+  // stay synchronous per the PackedWriter contract, so each call's bytes are
+  // copied into a queue (the caller's buffer may be reused or transferred right
+  // after write() returns) and the actual async writes happen in close().
+  // Memory cost: the whole file's bytes are held in memory a second time (once
+  // queued here, once inside the stream) until close() resolves. That is fine
+  // for the tiny JSON-adjacent writes the main thread does; the ingest worker
+  // never takes this path.
+  const writable = await fileHandle.createWritable()
+  const queue: Uint8Array<ArrayBuffer>[] = []
+  let bytesWritten = 0
+  return {
+    write(bytes) {
+      const view = asBytes(bytes)
+      queue.push(view.slice())
+      bytesWritten += view.byteLength
+    },
+    get bytesWritten() {
+      return bytesWritten
+    },
+    async close() {
+      for (const chunk of queue) {
+        await writable.write(chunk)
+      }
+      await writable.close()
+    },
+  }
+}
+
+/** Delete the whole zarr tree. Used by the UI's "clear cached data" button. */
+export async function clearAllDatasets(): Promise<void> {
+  const root = await navigator.storage.getDirectory()
+  try {
+    await root.removeEntry(ZARR_ROOT, { recursive: true })
+  } catch (err) {
+    if (!isNotFound(err)) throw err
+  }
+}
+
+/** Delete one dataset. */
+export async function removeDataset(datasetId: string): Promise<void> {
+  const zarrRoot = await resolveDir(ZARR_ROOT, false)
+  if (!zarrRoot) return
+  try {
+    await zarrRoot.removeEntry(datasetId, { recursive: true })
+  } catch (err) {
+    if (!isNotFound(err)) throw err
+  }
+}
+
+/** Dataset ids currently in OPFS. */
+export async function listDatasets(): Promise<string[]> {
+  const zarrRoot = await resolveDir(ZARR_ROOT, false)
+  if (!zarrRoot) return []
+  const ids: string[] = []
+  for await (const name of (
+    zarrRoot as unknown as FileSystemDirectoryHandleIterable
+  ).keys()) {
+    ids.push(name)
+  }
+  return ids
+}
+
+export async function storageEstimate(): Promise<{
+  usage: number
+  quota: number
+}> {
+  const estimate = await navigator.storage.estimate()
+  return { usage: estimate.usage ?? 0, quota: estimate.quota ?? 0 }
+}
+
+/** Ask the browser to make storage persistent, reducing eviction risk. Never throws. */
+export async function requestPersist(): Promise<boolean> {
+  try {
+    return await navigator.storage.persist()
+  } catch (err) {
+    console.error("requestPersist failed", err)
+    return false
+  }
+}

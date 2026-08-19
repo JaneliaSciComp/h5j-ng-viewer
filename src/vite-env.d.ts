@@ -16,7 +16,8 @@ declare module "@janelia/react-neuroglancer" {
   export function useNeuroglancer(viewer: NeuroglancerViewerInstance | null): {
     snapshot: unknown
     setState: (
-      updater: Record<string, unknown> | ((state: Record<string, unknown>) => unknown)
+      updater:
+        Record<string, unknown> | ((state: Record<string, unknown>) => unknown)
     ) => void
   }
   export type NeuroglancerViewerInstance = {

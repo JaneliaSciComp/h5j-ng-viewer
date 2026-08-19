@@ -15,7 +15,7 @@ const packageDir = (id: string) =>
 // hosted under a sub-path -- `base` must stay "/".
 const ngAssetsDir = path.join(
   packageDir("@janelia/react-neuroglancer"),
-  "dist/assets",
+  "dist/assets"
 )
 
 // ffmpeg.wasm 0.10 defaults its `corePath` to unpkg.com, which cross-origin
