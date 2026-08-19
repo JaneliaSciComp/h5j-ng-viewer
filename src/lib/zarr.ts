@@ -38,8 +38,27 @@ export function chunkGrid(size: Vec3): [number, number, number] {
 }
 
 /** Uncompressed bytes in one chunk. Also the chunk stride in the packed file. */
-export function chunkBytes(bits: BitDepth): number {
-  return CHUNK[0] * CHUNK[1] * CHUNK[2] * bytesPerVoxel(bits)
+/** Voxels in one channel's spatial sub-block of a chunk. */
+export function subChunkVoxels(): number {
+  return CHUNK[0] * CHUNK[1] * CHUNK[2]
+}
+
+/** Bytes in one channel's sub-block of a chunk. */
+export function subChunkBytes(bits: BitDepth): number {
+  return subChunkVoxels() * bytesPerVoxel(bits)
+}
+
+/**
+ * Bytes in one whole chunk, spanning EVERY channel.
+ *
+ * Neuroglancer requires a channel dimension to "map with stride 1 to a single data
+ * chunk", so `chunks[0]` must equal `shape[0]` -- a channel axis split across chunks
+ * makes it refuse to build a render layer, which shows up as a blank viewer that never
+ * even requests chunks. Within a chunk the layout is C-order [c][z][y][x], so each
+ * channel occupies a contiguous `subChunkBytes` block.
+ */
+export function chunkBytes(bits: BitDepth, channelCount: number): number {
+  return subChunkBytes(bits) * channelCount
 }
 
 /**
@@ -80,7 +99,8 @@ export function buildZarray(
   return {
     zarr_format: 2,
     shape: [channelCount, size.z, size.y, size.x],
-    chunks: [1, ...CHUNK],
+    // chunks[0] === shape[0] is a hard Neuroglancer requirement; see chunkBytes.
+    chunks: [channelCount, ...CHUNK],
     dtype: zarrDtype(bits),
     compressor: null,
     fill_value: 0,

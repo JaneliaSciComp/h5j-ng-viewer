@@ -76,9 +76,10 @@ describe("bit-depth helpers", () => {
     expect(maxValue(8)).toBe(255)
   })
 
-  it("chunkBytes", () => {
-    expect(chunkBytes(8)).toBe(64 * 64 * 64)
-    expect(chunkBytes(16)).toBe(64 * 64 * 64 * 2)
+  it("chunkBytes spans every channel", () => {
+    expect(chunkBytes(8, 1)).toBe(64 * 64 * 64)
+    expect(chunkBytes(16, 1)).toBe(64 * 64 * 64 * 2)
+    expect(chunkBytes(16, 2)).toBe(64 * 64 * 64 * 2 * 2)
   })
 })
 
@@ -237,7 +238,7 @@ describe("buildZarray", () => {
     }
     expect(z.shape).toEqual([3, 30, 20, 10])
     expect(z.dtype).toBe("|u1")
-    expect(z.chunks).toEqual([1, 64, 64, 64])
+    expect(z.chunks).toEqual([3, 64, 64, 64])
   })
 
   it("shape and dtype for 16-bit", () => {
@@ -248,6 +249,19 @@ describe("buildZarray", () => {
     expect(z.shape).toEqual([2, 30, 20, 10])
     expect(z.dtype).toBe("<u2")
   })
+
+  it.each([1, 2, 4])(
+    "chunks[0] === shape[0] for %i channel(s) -- Neuroglancer requires a channel " +
+      "axis to map with stride 1 to a single chunk, or it refuses to build a render layer",
+    (channelCount) => {
+      const z = buildZarray({ x: 10, y: 20, z: 30 }, channelCount, 8) as {
+        shape: number[]
+        chunks: number[]
+      }
+      expect(z.chunks[0]).toBe(z.shape[0])
+      expect(z.shape[0]).toBe(channelCount)
+    }
+  )
 })
 
 describe("buildZattrs", () => {

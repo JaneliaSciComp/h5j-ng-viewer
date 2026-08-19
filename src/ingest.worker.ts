@@ -12,13 +12,14 @@ import {
   CHUNK,
   chunkBytes,
   downsample2x,
+  subChunkBytes,
   gatherChunk,
   pyramid,
 } from "@/lib/zarr"
 import { openPackedWriter, writeJson } from "@/lib/opfs"
 import { measureChannel } from "@/lib/stats"
 import {
-  chunkFilePath,
+  chunksFilePath,
   levelIndexPath,
   zarrayPath,
   zattrsPath,
@@ -59,7 +60,7 @@ async function ingest(request: IngestRequest): Promise<void> {
   // A partially ingested dataset is still readable: zarr treats a missing chunk as
   // fill_value, so channels that have not been written yet render as zeros instead of
   // failing the load. That is why each channel gets its own packed file.
-  const { datasetId, bits, dims, channelIndex } = request
+  const { datasetId, bits, dims, channelIndex, channelCount } = request
   const levels = pyramid(dims.size)
 
   // Metadata is rewritten on every channel rather than only on the first. It is four
@@ -137,13 +138,25 @@ async function ingest(request: IngestRequest): Promise<void> {
     })
 
     const writer = await openPackedWriter(
-      chunkFilePath(datasetId, level.level, channelIndex)
+      chunksFilePath(datasetId, level.level)
     )
     try {
       const [gz, gy, gx] = level.grid
+      const wholeChunk = chunkBytes(bits, channelCount)
+      const perChannel = subChunkBytes(bits)
+      // Reserve the level's full extent up front. Only the last channel writes the
+      // final chunk's tail, so without this the file is short of a whole chunk while
+      // earlier channels are still ingesting -- and the viewer, which mounts after the
+      // first channel, would get a 404 for that chunk.
+      writer.ensureSize(gz * gy * gx * wholeChunk)
       // z outer, then y, then x. This ordering IS the index: the service worker
       // recovers a chunk's offset as ((z * gy + y) * gx + x) * chunkBytes, and that
       // is the only place the arithmetic exists. Do not reorder these loops.
+      //
+      // A chunk spans every channel, so this channel's sub-block sits at a fixed
+      // offset inside each chunk rather than at the write cursor -- hence writeAt.
+      // Sub-blocks belonging to channels not yet ingested stay as zeros, which zarr
+      // reads as fill_value.
       for (let z = 0; z < gz; z += 1) {
         for (let y = 0; y < gy; y += 1) {
           for (let x = 0; x < gx; x += 1) {
@@ -157,7 +170,11 @@ async function ingest(request: IngestRequest): Promise<void> {
               x,
               scratch
             )
-            writer.write(scratch)
+            const chunkIndex = (z * gy + y) * gx + x
+            writer.writeAt(
+              scratch,
+              chunkIndex * wholeChunk + channelIndex * perChannel
+            )
             writtenChunks += 1
           }
         }
@@ -207,7 +224,7 @@ async function writeMetadata(
     )
     const index: LevelIndex = {
       grid: level.grid,
-      chunkBytes: chunkBytes(bits),
+      chunkBytes: chunkBytes(bits, channelCount),
     }
     await writeJson(levelIndexPath(datasetId, level.level), index)
   }

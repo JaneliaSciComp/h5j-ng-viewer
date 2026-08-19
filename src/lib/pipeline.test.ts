@@ -11,10 +11,12 @@ import {
   downsample2x,
   gatherChunk,
   pyramid,
+  subChunkBytes,
 } from "@/lib/zarr"
 import type { Vec3 } from "@/types"
 
 const CHUNK_VOXELS = CHUNK[0] * CHUNK[1] * CHUNK[2]
+const CHANNEL_COUNT = 2
 
 /** The service worker's offset formula, restated here and cross-checked below. */
 const chunkOffset = (
@@ -62,7 +64,7 @@ describe("pyramid geometry agrees with what downsample2x produces", () => {
 })
 
 describe("packed layout round-trips through the service worker's offset formula", () => {
-  it("reads back every voxel of every chunk at its computed offset", () => {
+  it("reads back every voxel of every channel of every chunk at its computed offset", () => {
     // Small enough to brute-force, large enough to span several chunks on each axis
     // and to have partial chunks on all three.
     const size: Vec3 = { x: 100, y: 70, z: 66 }
@@ -70,43 +72,58 @@ describe("packed layout round-trips through the service worker's offset formula"
     const padX = 104
     const padY = 72
     const bits = 16 as const
-    const bytes = chunkBytes(bits)
+    const wholeChunkBytes = chunkBytes(bits, CHANNEL_COUNT)
+    const subBytes = subChunkBytes(bits)
     const grid = chunkGrid(size)
 
-    const source = new Uint16Array(padX * padY * size.z)
-    // Fill the padding with a sentinel so a crop bug cannot pass silently.
-    source.fill(0xffff)
-    const expected = (x: number, y: number, z: number) =>
-      ((x * 7 + y * 13 + z * 31) % 4093) + 1
-    for (let z = 0; z < size.z; z += 1) {
-      for (let y = 0; y < size.y; y += 1) {
-        for (let x = 0; x < size.x; x += 1) {
-          source[(z * padY + y) * padX + x] = expected(x, y, z)
+    // One source volume per channel, values depend on the channel so a mix-up in the
+    // interleaving (the thing that just broke) cannot pass silently.
+    const expected = (channel: number, x: number, y: number, z: number) =>
+      ((channel * 20000 + x * 7 + y * 13 + z * 31) % 4093) + 1
+
+    const sources: Uint16Array[] = []
+    for (let c = 0; c < CHANNEL_COUNT; c += 1) {
+      const source = new Uint16Array(padX * padY * size.z)
+      // Fill the padding with a sentinel so a crop bug cannot pass silently.
+      source.fill(0xffff)
+      for (let z = 0; z < size.z; z += 1) {
+        for (let y = 0; y < size.y; y += 1) {
+          for (let x = 0; x < size.x; x += 1) {
+            source[(z * padY + y) * padX + x] = expected(c, x, y, z)
+          }
         }
       }
+      sources.push(source)
     }
 
-    // Replay the ingest worker's write loop exactly: z outer, then y, then x,
-    // appending each full chunk with no gaps.
-    const packed = new Uint16Array(grid[0] * grid[1] * grid[2] * CHUNK_VOXELS)
+    // Replay the ingest worker's write loop exactly: z outer, then y, then x, each
+    // channel's sub-block written with `writeAt` at its fixed offset inside the
+    // whole chunk rather than at the write cursor.
+    const packed = new Uint16Array(
+      (grid[0] * grid[1] * grid[2] * wholeChunkBytes) / 2
+    )
     const scratch = new Uint16Array(CHUNK_VOXELS)
-    let cursor = 0
     for (let z = 0; z < grid[0]; z += 1) {
       for (let y = 0; y < grid[1]; y += 1) {
         for (let x = 0; x < grid[2]; x += 1) {
-          gatherChunk(source, size, padX, padY, z, y, x, scratch)
-          packed.set(scratch, cursor)
-          cursor += CHUNK_VOXELS
+          const chunkIndex = (z * grid[1] + y) * grid[2] + x
+          for (let c = 0; c < CHANNEL_COUNT; c += 1) {
+            gatherChunk(sources[c], size, padX, padY, z, y, x, scratch)
+            const offset = (chunkIndex * wholeChunkBytes + c * subBytes) / 2
+            packed.set(scratch, offset)
+          }
         }
       }
     }
-    expect(cursor).toBe(packed.length)
-    expect(packed.byteLength).toBe(grid[0] * grid[1] * grid[2] * bytes)
+    expect(packed.byteLength).toBe(
+      grid[0] * grid[1] * grid[2] * wholeChunkBytes
+    )
 
-    // Read every voxel back the way the viewer would: locate the chunk via the
-    // service worker's byte offset, then index within it. The byte offset is
-    // converted to an element index because `packed` is a Uint16Array view of what
-    // the service worker treats as raw bytes.
+    // Read every voxel of every channel back the way the viewer would: locate the
+    // chunk via the service worker's byte offset, then this channel's sub-block
+    // within it, then index within that. The byte offsets are converted to element
+    // indices because `packed` is a Uint16Array view of what the service worker
+    // treats as raw bytes.
     // Compare in a plain loop and assert once. A per-voxel `expect` would make this
     // test take longer than the whole rest of the suite.
     let checked = 0
@@ -114,23 +131,29 @@ describe("packed layout round-trips through the service worker's offset formula"
     for (let cz = 0; cz < grid[0] && !mismatch; cz += 1) {
       for (let cy = 0; cy < grid[1] && !mismatch; cy += 1) {
         for (let cx = 0; cx < grid[2] && !mismatch; cx += 1) {
-          const base = chunkOffset(grid, cz, cy, cx, bytes) / 2
-          for (let iz = 0; iz < CHUNK[0] && !mismatch; iz += 1) {
-            const z = cz * CHUNK[0] + iz
-            for (let iy = 0; iy < CHUNK[1] && !mismatch; iy += 1) {
-              const y = cy * CHUNK[1] + iy
-              for (let ix = 0; ix < CHUNK[2]; ix += 1) {
-                const x = cx * CHUNK[2] + ix
-                const value =
-                  packed[base + (iz * CHUNK[1] + iy) * CHUNK[2] + ix]
-                // Out-of-volume positions must be zero-padded, and the sentinel must
-                // never appear -- that would mean the source padding leaked through.
-                const want =
-                  x < size.x && y < size.y && z < size.z ? expected(x, y, z) : 0
-                checked += 1
-                if (value !== want) {
-                  mismatch = `at x=${x} y=${y} z=${z}: got ${value}, want ${want}`
-                  break
+          const chunkBase = chunkOffset(grid, cz, cy, cx, wholeChunkBytes) / 2
+          for (let c = 0; c < CHANNEL_COUNT && !mismatch; c += 1) {
+            const base = chunkBase + (c * subBytes) / 2
+            for (let iz = 0; iz < CHUNK[0] && !mismatch; iz += 1) {
+              const z = cz * CHUNK[0] + iz
+              for (let iy = 0; iy < CHUNK[1] && !mismatch; iy += 1) {
+                const y = cy * CHUNK[1] + iy
+                for (let ix = 0; ix < CHUNK[2]; ix += 1) {
+                  const x = cx * CHUNK[2] + ix
+                  const value =
+                    packed[base + (iz * CHUNK[1] + iy) * CHUNK[2] + ix]
+                  // Out-of-volume positions must be zero-padded, and the sentinel
+                  // must never appear -- that would mean the source padding leaked
+                  // through.
+                  const want =
+                    x < size.x && y < size.y && z < size.z
+                      ? expected(c, x, y, z)
+                      : 0
+                  checked += 1
+                  if (value !== want) {
+                    mismatch = `at c=${c} x=${x} y=${y} z=${z}: got ${value}, want ${want}`
+                    break
+                  }
                 }
               }
             }

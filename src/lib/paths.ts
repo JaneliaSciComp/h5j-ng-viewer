@@ -5,7 +5,7 @@
 //   zarr/<datasetId>/.zattrs
 //   zarr/<datasetId>/<level>/.zarray
 //   zarr/<datasetId>/<level>/index.json    -> LevelIndex
-//   zarr/<datasetId>/<level>/c<c>.bin      -> every chunk of channel <c>, packed
+//   zarr/<datasetId>/<level>/chunks.bin    -> every chunk, packed
 //
 // A level's chunks are packed contiguously in chunk-grid order (z outer, then y,
 // then x), so a chunk's offset is a single multiply. The service worker
@@ -34,9 +34,10 @@ export const zarrayPath = (datasetId: string, level: number) =>
 export const levelIndexPath = (datasetId: string, level: number) =>
   `${levelPath(datasetId, level)}/index.json`
 
-/** Packed chunk file for one channel of one level. */
-export const chunkFilePath = (
-  datasetId: string,
-  level: number,
-  channelIndex: number
-) => `${levelPath(datasetId, level)}/c${channelIndex}.bin`
+/**
+ * Packed chunk file for one level, holding every channel. Channels share the file
+ * because a chunk spans the whole channel axis (Neuroglancer requires it), and each
+ * channel occupies a contiguous sub-block inside each chunk.
+ */
+export const chunksFilePath = (datasetId: string, level: number) =>
+  `${levelPath(datasetId, level)}/chunks.bin`

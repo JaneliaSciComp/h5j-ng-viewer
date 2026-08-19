@@ -93,14 +93,27 @@ export async function fileExists(path: string): Promise<boolean> {
 }
 
 /**
- * Sequential writer for a level's packed chunk file. Chunks are appended in
- * chunk-grid order; the service worker recovers each chunk's offset by arithmetic,
- * so this writer must never reorder or pad between chunks.
+ * Writer for a level's packed chunk file. The service worker recovers each chunk's
+ * offset by arithmetic, so this writer must never reorder or pad between chunks.
+ *
+ * `writeAt` exists because a chunk spans every channel, while ingest decodes one
+ * channel at a time: channel `c`'s sub-blocks are scattered through the file at a
+ * fixed stride, so its writes are positioned rather than sequential. Gaps left by
+ * channels not yet written read back as zeros, which zarr treats as fill_value.
  */
 export interface PackedWriter {
   /** Append bytes at the current position. */
   write(bytes: ArrayBufferView): void
-  /** Total bytes written so far. */
+  /** Write bytes at an absolute offset, extending the file if needed. */
+  writeAt(bytes: ArrayBufferView, offset: number): void
+  /**
+   * Grow the file to at least `bytes` on close, never shrink it. Needed because the
+   * highest offset written depends on which channel wrote last: with only the first of
+   * several channels ingested, the file stops short of the final chunk's end and the
+   * service worker would 404 that chunk until a later channel extends it.
+   */
+  ensureSize(bytes: number): void
+  /** Highest offset written so far. */
   readonly bytesWritten: number
   close(): Promise<void>
 }
@@ -136,16 +149,26 @@ export async function openPackedWriter(path: string): Promise<PackedWriter> {
   if (typeof fileHandle.createSyncAccessHandle === "function") {
     const handle = await fileHandle.createSyncAccessHandle()
     let bytesWritten = 0
+    let target = 0
     return {
       write(bytes) {
         const view = asBytes(bytes)
         handle.write(view, { at: bytesWritten })
         bytesWritten += view.byteLength
       },
+      writeAt(bytes, offset) {
+        const view = asBytes(bytes)
+        handle.write(view, { at: offset })
+        bytesWritten = Math.max(bytesWritten, offset + view.byteLength)
+      },
+      ensureSize(bytes) {
+        target = Math.max(target, bytes)
+      },
       get bytesWritten() {
         return bytesWritten
       },
       async close() {
+        if (target > bytesWritten) handle.truncate(target)
         handle.flush()
         handle.close()
       },
@@ -161,21 +184,35 @@ export async function openPackedWriter(path: string): Promise<PackedWriter> {
   // for the tiny JSON-adjacent writes the main thread does; the ingest worker
   // never takes this path.
   const writable = await fileHandle.createWritable()
-  const queue: Uint8Array<ArrayBuffer>[] = []
+  const queue: Array<{ bytes: Uint8Array<ArrayBuffer>; at: number }> = []
   let bytesWritten = 0
+  let target = 0
   return {
     write(bytes) {
       const view = asBytes(bytes)
-      queue.push(view.slice())
+      queue.push({ bytes: view.slice(), at: bytesWritten })
       bytesWritten += view.byteLength
+    },
+    writeAt(bytes, offset) {
+      const view = asBytes(bytes)
+      queue.push({ bytes: view.slice(), at: offset })
+      bytesWritten = Math.max(bytesWritten, offset + view.byteLength)
+    },
+    ensureSize(bytes) {
+      target = Math.max(target, bytes)
     },
     get bytesWritten() {
       return bytesWritten
     },
     async close() {
       for (const chunk of queue) {
-        await writable.write(chunk)
+        await writable.write({
+          type: "write",
+          position: chunk.at,
+          data: chunk.bytes,
+        })
       }
+      if (target > bytesWritten) await writable.truncate(target)
       await writable.close()
     },
   }

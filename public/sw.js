@@ -13,8 +13,10 @@
 //   zarr/<datasetId>/.zattrs
 //   zarr/<datasetId>/<level>/.zarray
 //   zarr/<datasetId>/<level>/index.json    -> { grid: [gz, gy, gx], chunkBytes }
-//   zarr/<datasetId>/<level>/c<c>.bin      -> every chunk of channel <c>, packed
-//                                              contiguously in z-outer, y, x order
+//   zarr/<datasetId>/<level>/chunks.bin    -> every chunk, packed contiguously in
+//                                              z-outer, y, x order. A chunk spans the
+//                                              whole channel axis, so `c` in a chunk
+//                                              key is always 0.
 //
 // The worker may be killed and restarted between any two requests (it has no
 // lifetime guarantee), so it must not hold any ingest-derived state.
@@ -90,10 +92,12 @@ async function resolvePath(path) {
   const { grid, chunkBytes } = index
   const [gz, gy, gx] = grid
   const { c, z, y, x } = chunkKey
+  // chunks[0] === shape[0], so the channel axis is a single chunk and the only valid
+  // index on it is 0. Every channel's data lives inside the chunk this resolves to.
+  if (c !== 0) return null
   if (z < 0 || z >= gz || y < 0 || y >= gy || x < 0 || x >= gx) return null
 
-  const chunkFileSegments = levelSegments.concat(`c${c}.bin`)
-  const file = await getFileAt(chunkFileSegments)
+  const file = await getFileAt(levelSegments.concat("chunks.bin"))
   if (!file) return null
 
   // The only place in the codebase this arithmetic exists (see src/lib/paths.ts):
@@ -104,7 +108,7 @@ async function resolvePath(path) {
 
   return {
     // Neuroglancer must see this chunk as an independent resource of length
-    // chunkBytes -- NOT the size of the shared c<c>.bin file it happens to live in.
+    // chunkBytes -- NOT the size of the shared chunks.bin file it happens to live in.
     // Reporting the packed-file size here produces range mismatches that surface as
     // opaque fetch failures, not a clear error.
     totalLength: chunkBytes,
