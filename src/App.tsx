@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { NeuroglancerViewer } from "@janelia/react-neuroglancer"
 import { ChannelList } from "@/components/ChannelList"
+import { Dialog } from "@/components/Dialog"
 import { IngestProgress } from "@/components/IngestProgress"
 import { SourcePicker } from "@/components/SourcePicker"
 import { StorageStatus } from "@/components/StorageStatus"
@@ -46,6 +47,7 @@ export function App() {
   const [storage, setStorage] = useState({ usage: 0, quota: 0 })
   const [persisted, setPersisted] = useState(false)
   const [clearing, setClearing] = useState(false)
+  const [loadOpen, setLoadOpen] = useState(true)
 
   const busy = phase !== "idle" && phase !== "done"
 
@@ -271,9 +273,51 @@ export function App() {
 
   return (
     <div className="app">
-      <aside className="panel">
+      <header className="topbar">
         <h1>H5J → Neuroglancer</h1>
+        <span className="topbar-dataset" title={sourceName || undefined}>
+          {datasetId ? sourceName || datasetId : "No data loaded"}
+        </span>
+        <IngestProgress
+          compact
+          phase={phase}
+          fraction={fraction}
+          channelLabel={channelLabel}
+          detail={detail}
+          warnings={warnings}
+          error={error}
+        />
+        <button
+          type="button"
+          className="primary"
+          onClick={() => setLoadOpen(true)}
+        >
+          Load data…
+        </button>
+      </header>
 
+      <main className="viewer-area">
+        {viewerState && datasetId ? (
+          <NeuroglancerViewer
+            key={datasetId}
+            initialState={viewerState}
+            className="ng"
+            width="100%"
+            height="100%"
+          />
+        ) : (
+          <p className="placeholder">
+            Choose an H5J file to convert and view. Nothing is uploaded —
+            decoding and conversion happen in this tab.
+          </p>
+        )}
+      </main>
+
+      <Dialog
+        open={loadOpen}
+        title="Load data"
+        onClose={() => setLoadOpen(false)}
+      >
         <SourcePicker onSelect={onSelectSource} disabled={busy} />
 
         {info && (
@@ -290,7 +334,10 @@ export function App() {
             <button
               type="button"
               className="primary"
-              onClick={onIngest}
+              onClick={() => {
+                setLoadOpen(false)
+                void onIngest()
+              }}
               disabled={busy || selected.length === 0}
             >
               {busy ? "Converting…" : "Convert and view"}
@@ -300,21 +347,15 @@ export function App() {
 
         <button
           type="button"
-          onClick={onSynthetic}
+          onClick={() => {
+            setLoadOpen(false)
+            void onSynthetic()
+          }}
           disabled={busy}
           title="Ingest a generated volume, bypassing H5J decoding"
         >
           Load synthetic test volume
         </button>
-
-        <IngestProgress
-          phase={phase}
-          fraction={fraction}
-          channelLabel={channelLabel}
-          detail={detail}
-          warnings={warnings}
-          error={error}
-        />
 
         <StorageStatus
           usage={storage.usage}
@@ -324,24 +365,7 @@ export function App() {
           onClear={onClear}
           clearing={clearing}
         />
-      </aside>
-
-      <main className="viewer">
-        {viewerState && datasetId ? (
-          <NeuroglancerViewer
-            key={datasetId}
-            initialState={viewerState}
-            className="ng"
-            width="100%"
-            height="100%"
-          />
-        ) : (
-          <p className="placeholder">
-            Choose an H5J file to convert and view. Nothing is uploaded —
-            decoding and conversion happen in this tab.
-          </p>
-        )}
-      </main>
+      </Dialog>
     </div>
   )
 }

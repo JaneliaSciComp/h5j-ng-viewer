@@ -38,31 +38,126 @@ body {
   font-size: 14px;
 }
 
+/* Full-viewport column: a fixed-height bar over a viewer that takes everything else.
+   Neuroglancer's container is given height:100%, so every ancestor needs a definite
+   height -- html/body/#root at 100%, then `flex: 1` plus `min-height: 0` here. Without
+   the min-height the flex item refuses to shrink below its content and the viewer
+   collapses to a sliver. */
 #root {
   display: flex;
-  flex-direction: row;
+  flex-direction: column;
+  overflow: hidden;
 }
 
-/* Side panel sits next to a flex-filling viewer area. The viewer child is
-   given height:100% by Neuroglancer, so every ancestor down to #root needs a
-   definite height -- html/body/#root:100% above, and this flex row means the
-   viewer area gets a definite height from the row's cross-axis stretch. */
-.side-panel {
-  width: 320px;
-  flex: 0 0 320px;
-  overflow-y: auto;
-  padding: 12px;
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.topbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 14px;
   background: var(--bg-panel);
-  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.topbar-dataset {
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 28ch;
+}
+
+.topbar .primary {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.viewer-area {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+.viewer-area .ng {
+  display: block;
+}
+
+.placeholder {
+  margin: 0;
+  padding: 24px;
+  max-width: 46ch;
+  color: var(--text-dim);
+}
+
+/* Dialog -- the native element supplies the backdrop, focus trap and Esc handling. */
+.dialog {
+  border: none;
+  background: none;
+  padding: 0;
+  max-width: 100vw;
+  max-height: 100vh;
+  color: var(--text);
+}
+
+.dialog::backdrop {
+  background: rgb(0 0 0 / 0.6);
+}
+
+.dialog-panel {
+  width: min(440px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.dialog-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.dialog-header h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.dialog-header button {
+  margin-left: auto;
+  padding: 2px 8px;
+  line-height: 1.2;
+}
+
+.dialog-body {
+  padding: 14px;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 16px;
 }
 
-.viewer-area {
-  flex: 1 1 auto;
-  min-width: 0;
-  height: 100%;
+.primary {
+  border-color: var(--accent);
 }
 
 a,
@@ -186,6 +281,36 @@ legend {
 }
 
 /* IngestProgress */
+.ingest-compact {
+  flex: 1 1 auto;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ingest-compact .ingest-label {
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.ingest-compact progress {
+  flex: 0 1 160px;
+  min-width: 60px;
+}
+
+.ingest-compact .ingest-detail,
+.ingest-compact .ingest-warnings,
+.ingest-compact .ingest-error {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
 .ingest-progress {
   display: flex;
   flex-direction: column;
