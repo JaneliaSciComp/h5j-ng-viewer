@@ -143,3 +143,78 @@ describe("buildViewerState", () => {
     expect(roundTripped).toEqual(state)
   })
 })
+
+describe("scales are expressed in voxels, not metres", () => {
+  // The regression this pins: `dimensions` declares metres *per voxel*, so the
+  // coordinate space is voxel-indexed and `position` is a voxel index. Deriving
+  // projectionScale from the physical extent instead produced 9.4e-4 for a real
+  // volume, zooming the 3D view in by roughly a million times and leaving it blank
+  // with no error. flyefish-web's working state confirms the convention:
+  // projectionScale 2332 for a ~1920-voxel volume.
+  const size = { x: 1210, y: 566, z: 174 }
+  const state = buildViewerState({
+    origin: "https://example.org",
+    datasetId: "d",
+    datasetName: "d",
+    channelNames: ["Channel_0"],
+    channelColors: ["#ffffff"],
+    voxelSize: { x: 0.5189161, y: 0.5189161, z: 1 },
+    size,
+    bits: 16,
+  }) as { projectionScale: number; crossSectionScale: number }
+
+  it("scales projectionScale with the longest axis in voxels", () => {
+    expect(state.projectionScale).toBeCloseTo(1210 * 1.5, 6)
+  })
+
+  it("does not express projectionScale in metres", () => {
+    // The physical extent is 1210 * 0.5189161e-6 m ~= 6.3e-4, so anything below 1 here
+    // means the metres bug is back.
+    expect(state.projectionScale).toBeGreaterThan(1)
+  })
+
+  it("keeps crossSectionScale a sane voxels-per-pixel figure", () => {
+    expect(state.crossSectionScale).toBeGreaterThanOrEqual(1)
+    expect(state.crossSectionScale).toBeLessThan(size.x)
+  })
+})
+
+describe("measured contrast overrides the dtype range", () => {
+  const base = {
+    origin: "https://example.org",
+    datasetId: "d",
+    datasetName: "d",
+    channelNames: ["a", "b"],
+    channelColors: ["#ffffff", "#ff0000"],
+    voxelSize: { x: 1, y: 1, z: 1 },
+    size: { x: 64, y: 64, z: 64 },
+    bits: 16 as const,
+  }
+
+  const controlsOf = (state: Record<string, unknown>) => {
+    const layers = state.layers as Array<{
+      shaderControls: Record<string, { range: number[]; window: number[] }>
+    }>
+    return layers[0].shaderControls
+  }
+
+  it("uses the measured range and keeps the full dtype window", () => {
+    const controls = controlsOf(
+      buildViewerState({ ...base, channelRanges: [[12, 830]] })
+    )
+    expect(controls.normalized0.range).toEqual([12, 830])
+    // The window stays wide so the slider can be opened up past the measurement.
+    expect(controls.normalized0.window).toEqual([0, 4095])
+    // Channel 1 had no measurement yet, so it must fall back rather than invent one.
+    expect(controls.normalized1.range).toEqual([0, 4095])
+  })
+
+  it("ignores a degenerate measured range", () => {
+    // A zero-width invlerp range makes Neuroglancer render nothing at all, which is
+    // worse than a badly-scaled but non-empty default.
+    const controls = controlsOf(
+      buildViewerState({ ...base, channelRanges: [[500, 500]] })
+    )
+    expect(controls.normalized0.range).toEqual([0, 4095])
+  })
+})

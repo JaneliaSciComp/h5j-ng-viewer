@@ -299,8 +299,62 @@ legend {
   min-width: 60px;
 }
 
+/* Warnings open over the viewer instead of reflowing the bar. */
+.ingest-warnings-details,
+.ingest-details-popover {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.ingest-details-popover > summary {
+  cursor: pointer;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.ingest-details-popover[open] > ul {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 10;
+  width: max-content;
+  max-width: 60ch;
+  margin: 0;
+  padding: 10px 10px 10px 26px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.4);
+  white-space: normal;
+}
+
+.topbar-geometry {
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.ingest-warnings-details > summary {
+  cursor: pointer;
+  color: var(--warn);
+  white-space: nowrap;
+}
+
+.ingest-warnings-details[open] > ul {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 10;
+  width: max-content;
+  max-width: 60ch;
+  padding: 10px 10px 10px 26px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.4);
+  white-space: normal;
+}
+
 .ingest-compact .ingest-detail,
-.ingest-compact .ingest-warnings,
 .ingest-compact .ingest-error {
   margin: 0;
   padding: 0;

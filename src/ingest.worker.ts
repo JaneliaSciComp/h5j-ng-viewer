@@ -16,6 +16,7 @@ import {
   pyramid,
 } from "@/lib/zarr"
 import { openPackedWriter, writeJson } from "@/lib/opfs"
+import { measureChannel } from "@/lib/stats"
 import {
   chunkFilePath,
   levelIndexPath,
@@ -84,6 +85,23 @@ async function ingest(request: IngestRequest): Promise<void> {
   // its child doubles peak memory. `source` is reassigned each level, so once this
   // reference is gone the parent level becomes collectable on schedule.
   request.data = new ArrayBuffer(0)
+
+  // Measured before chunking, while the level-0 data is still to hand. Contrast is
+  // seeded from this rather than from the dtype range: fluorescence volumes are mostly
+  // near-zero background, so a [0, 4095] window maps the real signal to near-black and
+  // the viewer looks empty. It is also the one number that distinguishes "the data is
+  // zeros" from "the data is fine but invisible".
+  post({
+    type: "stats",
+    channelIndex,
+    stats: measureChannel(
+      source.data,
+      source.size,
+      source.strideX,
+      source.strideY,
+      bits
+    ),
+  })
 
   const scratch = allocate(CHUNK[0] * CHUNK[1] * CHUNK[2], bits)
 

@@ -25,6 +25,8 @@ export function IngestProgress(props: {
   detail?: string
   warnings?: string[]
   error?: string | null
+  /** Extra informational lines, e.g. measured per-channel intensity ranges. */
+  details?: string[]
   /** Single-line variant for the top bar. */
   compact?: boolean
 }): ReactElement {
@@ -55,12 +57,30 @@ export function IngestProgress(props: {
           <span className="ingest-detail">{props.detail}</span>
         ) : null}
         {props.warnings && props.warnings.length > 0 ? (
-          // Collapsed to a count with the full text in the tooltip, because a warning
-          // list would push the viewer down and these are advisory.
-          <span className="ingest-warnings" title={props.warnings.join("\n")}>
-            {props.warnings.length} warning
-            {props.warnings.length === 1 ? "" : "s"}
-          </span>
+          // A <details> rather than a tooltip: a title attribute is undiscoverable and
+          // unreachable by keyboard, and these warnings explain exactly the sort of
+          // "it loaded but looks wrong" case someone is trying to debug.
+          <details className="ingest-warnings-details">
+            <summary>
+              {props.warnings.length} warning
+              {props.warnings.length === 1 ? "" : "s"}
+            </summary>
+            <ul className="ingest-warnings">
+              {props.warnings.map((warning, index) => (
+                <li key={index}>{warning}</li>
+              ))}
+            </ul>
+          </details>
+        ) : null}
+        {props.details && props.details.length > 0 ? (
+          <details className="ingest-details-popover">
+            <summary>Data</summary>
+            <ul>
+              {props.details.map((line, index) => (
+                <li key={index}>{line}</li>
+              ))}
+            </ul>
+          </details>
         ) : null}
         {props.error ? (
           <span className="ingest-error" role="alert" title={props.error}>

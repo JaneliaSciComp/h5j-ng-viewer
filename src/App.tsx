@@ -23,6 +23,7 @@ import type {
   IngestRequest,
   ResolvedDims,
 } from "@/types"
+import type { ChannelStats } from "@/lib/stats"
 import type { H5JFile } from "@janelia/web-h5j-loader"
 
 type Phase = IngestPhase | "decoding" | "idle"
@@ -48,6 +49,8 @@ export function App() {
   const [persisted, setPersisted] = useState(false)
   const [clearing, setClearing] = useState(false)
   const [loadOpen, setLoadOpen] = useState(true)
+  const [geometry, setGeometry] = useState<string | null>(null)
+  const [channelStats, setChannelStats] = useState<string[]>([])
 
   const busy = phase !== "idle" && phase !== "done"
 
@@ -104,6 +107,7 @@ export function App() {
     // would risk later channels silently redefining the shape that earlier channels'
     // already-written chunks are read against.
     let dims: ResolvedDims | null = null
+    const stats: Array<ChannelStats | undefined> = []
 
     try {
       for (let index = 0; index < selected.length; index += 1) {
@@ -155,6 +159,8 @@ export function App() {
             )
           } else if (message.type === "progress") {
             setFraction(message.fraction)
+          } else if (message.type === "stats") {
+            stats[message.channelIndex] = message.stats
           }
         })
 
@@ -162,6 +168,10 @@ export function App() {
         // stream in underneath: zarr reads a not-yet-written chunk as fill_value.
         if (index === 0) {
           setDatasetId(id)
+          setGeometry(
+            `${dims.size.x}×${dims.size.y}×${dims.size.z}, ` +
+              `${selected.length} channel${selected.length === 1 ? "" : "s"}, ${bits}-bit`
+          )
           setViewerState(
             JSON.stringify(
               buildViewerState({
@@ -173,9 +183,28 @@ export function App() {
                 voxelSize: dims.voxelSize,
                 size: dims.size,
                 bits,
+                channelRanges: contrastRanges(stats, selected.length),
               })
             )
           )
+        }
+
+        const measured = stats[index]
+        if (measured) {
+          // Surfaced because an all-zero channel and a correctly-converted but dim one
+          // look identical in the viewer.
+          setChannelStats((previous) => [
+            ...previous,
+            `${name}: ${measured.min}–${measured.max}, ` +
+              `display ${measured.lower}–${measured.upper}, ` +
+              `${(measured.nonZeroFraction * 100).toFixed(1)}% non-zero`,
+          ])
+          if (measured.max === 0) {
+            collectedWarnings.push(
+              `Channel "${name}" decoded to all zeros, so it will render as nothing.`
+            )
+            setWarnings([...collectedWarnings])
+          }
         }
       }
 
@@ -278,6 +307,14 @@ export function App() {
         <span className="topbar-dataset" title={sourceName || undefined}>
           {datasetId ? sourceName || datasetId : "No data loaded"}
         </span>
+        {geometry ? (
+          <span
+            className="topbar-geometry"
+            title={channelStats.join("\n") || undefined}
+          >
+            {geometry}
+          </span>
+        ) : null}
         <IngestProgress
           compact
           phase={phase}
@@ -286,6 +323,7 @@ export function App() {
           detail={detail}
           warnings={warnings}
           error={error}
+          details={channelStats}
         />
         <button
           type="button"
@@ -411,6 +449,25 @@ function detachBuffer(array: Uint8Array | Uint16Array): ArrayBuffer {
   return exact
     ? (array.buffer as ArrayBuffer)
     : (array.slice().buffer as ArrayBuffer)
+}
+
+/**
+ * Per-channel display ranges from the measured statistics, in c-axis order. Channels
+ * still being ingested get no entry, so buildViewerState falls back to the dtype range
+ * for them rather than inventing a window.
+ */
+function contrastRanges(
+  stats: Array<ChannelStats | undefined>,
+  count: number
+): Array<[number, number]> {
+  const ranges: Array<[number, number]> = []
+  for (let index = 0; index < count; index += 1) {
+    const measured = stats[index]
+    if (measured && measured.upper > measured.lower) {
+      ranges[index] = [measured.lower, measured.upper]
+    }
+  }
+  return ranges
 }
 
 function makeDatasetId(sourceName: string): string {

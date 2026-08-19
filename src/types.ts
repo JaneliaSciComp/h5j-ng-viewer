@@ -96,6 +96,12 @@ export interface IngestRequest {
 
 /** Ingest worker -> main thread. */
 export type IngestMessage =
+  | {
+      type: "stats"
+      channelIndex: number
+      /** Measured intensity statistics for this channel's level-0 data. */
+      stats: import("@/lib/stats").ChannelStats
+    }
   | { type: "phase"; phase: IngestPhase; level: number; levelCount: number }
   | { type: "progress"; fraction: number }
   | { type: "levelReady"; level: number }

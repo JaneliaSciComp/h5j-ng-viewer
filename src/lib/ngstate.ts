@@ -64,6 +64,8 @@ export function buildViewerState(opts: {
   /** level 0 voxel extent, used to centre the initial position */
   size: Vec3
   bits: BitDepth
+  /** Measured [low, high] display range per channel; falls back to the dtype range. */
+  channelRanges?: Array<[number, number]>
 }): Record<string, unknown> {
   const {
     origin,
@@ -85,16 +87,27 @@ export function buildViewerState(opts: {
   // full-range 16-bit (0-65535). Using 65535 here would render everything near-black.
   const max = maxValueForBits(bits)
 
+  // Contrast comes from the measured data when we have it. The dtype range is a poor
+  // default for fluorescence: these volumes are mostly near-zero background with
+  // signal in a narrow band, so [0, 4095] maps everything to near-black and the view
+  // looks empty. `window` stays at the full dtype range so the slider can be widened.
   const shaderControls: Record<string, unknown> = {}
   for (let i = 0; i < channelNames.length; i++) {
-    shaderControls[`normalized${i}`] = { range: [0, max], window: [0, max] }
+    const measured = opts.channelRanges?.[i]
+    const range = measured && measured[1] > measured[0] ? measured : [0, max]
+    shaderControls[`normalized${i}`] = { range, window: [0, max] }
   }
 
-  // Fit the 3D projection view to the volume's physical extent.
-  const extentX = size.x * dx
-  const extentY = size.y * dy
-  const extentZ = size.z * dz
-  const projectionScale = Math.max(extentX, extentY, extentZ) * 1.5
+  // Scales are in VOXELS, not metres. `dimensions` declares metres *per voxel*, so the
+  // coordinate space is voxel-indexed -- which is why `position` is a voxel index.
+  // Computing these from the physical extent instead yields values around 1e-3 and
+  // zooms the 3D view in by a factor of a million, leaving it blank.
+  const longestAxis = Math.max(size.x, size.y, size.z)
+  const projectionScale = longestAxis * 1.5
+
+  // Voxels per pixel, chosen so the largest in-plane slice roughly fits a quadrant of
+  // a 4panel layout rather than opening zoomed into one corner.
+  const crossSectionScale = Math.max(1, Math.max(size.x, size.y) / 512)
 
   return {
     dimensions: {
@@ -126,7 +139,7 @@ export function buildViewerState(opts: {
       },
     ],
     layout: "4panel",
-    crossSectionScale: 1,
+    crossSectionScale,
     projectionScale,
   }
 }
