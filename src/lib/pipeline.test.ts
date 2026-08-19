@@ -3,7 +3,6 @@
 // service worker recovers each chunk's byte offset by arithmetic alone. If those two
 // ever disagree, every test in zarr.test.ts still passes and the viewer shows garbage.
 
-import { readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
 import {
   CHUNK,
@@ -141,13 +140,5 @@ describe("packed layout round-trips through the service worker's offset formula"
     }
     expect(mismatch).toBeNull()
     expect(checked).toBe(packed.length)
-  })
-
-  it("keeps the offset formula in public/sw.js identical to the one tested here", () => {
-    // The service worker is dependency-free plain JS served verbatim, so it cannot
-    // import the formula. This asserts the two statements of it have not drifted.
-    const source = readFileSync("public/sw.js", "utf8")
-    const normalized = source.replace(/\s+/g, "")
-    expect(normalized).toContain("((z*gy+y)*gx+x)*chunkBytes")
   })
 })

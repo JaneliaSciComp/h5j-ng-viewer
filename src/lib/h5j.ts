@@ -163,29 +163,48 @@ export function resolveDims(
   const padRight = firstNumber(channelsAttrs.pad_right, 0)
   const padBottom = firstNumber(channelsAttrs.pad_bottom, 0)
 
-  // Priority order per candidate, index-matched (candidate i of W pairs with
-  // candidate i of H): (1) the file's own declared padding, (2) the H.265
-  // macroblock alignment rule (round up to a multiple of 8) if the file didn't
-  // declare padding, (3) no padding at all. Tried in that order and the first
-  // pair whose area evenly divides the decoded voxel count wins.
-  const wCandidates = [trueW + padRight, Math.ceil(trueW / 8) * 8, trueW]
-  const hCandidates = [trueH + padBottom, Math.ceil(trueH / 8) * 8, trueH]
-
+  // Candidate padded extents, most trustworthy first:
+  //   1. The file's declared padding -- but only when it actually declares some.
+  //      A pad_right/pad_bottom of 0 is indistinguishable from "not recorded", and
+  //      admitting it as a candidate would preempt the alignment rule below with a
+  //      claim of "no padding" that the encoder cannot have honoured.
+  //   2. The H.265 macroblock alignment rule: round up to a multiple of 8. This is
+  //      what the decoder actually emits; web-vol-viewer relies on it in production.
+  //   3. No padding at all, as a last resort in case the alignment is not 8.
   const pairs: Array<[number, number]> = []
-  const seen = new Set<string>()
-  for (let i = 0; i < wCandidates.length; i++) {
-    const key = `${wCandidates[i]}x${hCandidates[i]}`
-    if (!seen.has(key)) {
-      seen.add(key)
-      pairs.push([wCandidates[i], hCandidates[i]])
+  const addPair = (w: number, h: number) => {
+    if (w > 0 && h > 0 && !pairs.some(([pw, ph]) => pw === w && ph === h)) {
+      pairs.push([w, h])
     }
   }
+  if (padRight > 0 || padBottom > 0)
+    addPair(trueW + padRight, trueH + padBottom)
+  addPair(Math.ceil(trueW / 8) * 8, Math.ceil(trueH / 8) * 8)
+  addPair(trueW, trueH)
 
-  let chosen: { padW: number; padH: number; nZ: number } | undefined
-  for (const [padW, padH] of pairs) {
-    if (padW > 0 && padH > 0 && decodedVoxelCount % (padW * padH) === 0) {
-      chosen = { padW, padH, nZ: decodedVoxelCount / (padW * padH) }
-      break
+  // Divisibility alone is too weak to identify the layout. For many realistic
+  // width/height pairs the *unpadded* area also divides the padded voxel count, just
+  // yielding a different and wrong frame count -- e.g. a 100x156 volume padded to
+  // 104x160 with 15 frames decodes to 249600 voxels, which 100*156 divides exactly,
+  // giving 16 frames and a row stride 4 short. That misreads every row after the
+  // first, shearing the volume rather than failing. So consider every candidate that
+  // fits and break the tie with the nominal frame count, which F8 makes a hint rather
+  // than an authority; priority order decides when the hint is absent or unhelpful.
+  const fits = pairs
+    .map(([padW, padH]) => ({
+      padW,
+      padH,
+      nZ: decodedVoxelCount / (padW * padH),
+    }))
+    .filter((candidate) => Number.isInteger(candidate.nZ) && candidate.nZ > 0)
+
+  let chosen = fits[0]
+  if (chosen && info.nominalSize.z > 0) {
+    for (const candidate of fits) {
+      const closer =
+        Math.abs(candidate.nZ - info.nominalSize.z) <
+        Math.abs(chosen.nZ - info.nominalSize.z)
+      if (closer) chosen = candidate
     }
   }
 

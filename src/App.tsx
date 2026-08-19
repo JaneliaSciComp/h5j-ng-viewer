@@ -20,6 +20,7 @@ import type {
   IngestMessage,
   IngestPhase,
   IngestRequest,
+  ResolvedDims,
 } from "@/types"
 import type { H5JFile } from "@janelia/web-h5j-loader"
 
@@ -95,6 +96,13 @@ export function App() {
     setDatasetId(null)
     setViewerState(null)
 
+    // Resolved once, from the first channel, and reused. Every channel of one H5J
+    // file shares the `Channels` group's width/height/frames, and the whole dataset
+    // shares a single .zarray -- so letting each channel resolve its own geometry
+    // would risk later channels silently redefining the shape that earlier channels'
+    // already-written chunks are read against.
+    let dims: ResolvedDims | null = null
+
     try {
       for (let index = 0; index < selected.length; index += 1) {
         const name = selected[index]
@@ -107,10 +115,18 @@ export function App() {
         // per-channel progress ratio.
         const decoded = await decodeChannel(file, name, bits, setFraction)
 
-        const dims = resolveDims(info, decoded.length)
-        if (index === 0 && dims.warnings.length > 0) {
-          collectedWarnings.push(...dims.warnings)
-          setWarnings([...collectedWarnings])
+        if (!dims) {
+          dims = resolveDims(info, decoded.length)
+          if (dims.warnings.length > 0) {
+            collectedWarnings.push(...dims.warnings)
+            setWarnings([...collectedWarnings])
+          }
+        } else if (decoded.length !== dims.padX * dims.padY * dims.size.z) {
+          throw new Error(
+            `Channel "${name}" decoded to ${decoded.length} voxels, but ` +
+              `"${selected[0]}" decoded to ${dims.padX * dims.padY * dims.size.z}. ` +
+              `Channels of one file must share a geometry.`
+          )
         }
 
         const request: IngestRequest = {

@@ -166,6 +166,50 @@ describe("resolveDims", () => {
   })
 })
 
+describe("resolveDims picks the aligned layout when the unpadded one also divides", () => {
+  // Regression: `pad_right`/`pad_bottom` of 0 used to be admitted as a real
+  // "no padding" candidate and tried before the macroblock-alignment rule. For
+  // plenty of realistic sizes the unpadded area also divides the padded voxel
+  // count, so the wrong candidate won and produced a short row stride -- which
+  // shears the volume instead of failing.
+  it("resolves 100x156 padded to 104x160 with 15 frames, not 100x156 with 16", () => {
+    const info = makeInfo({ width: 100, height: 156, frames: 15 })
+    // The decoder emits macroblock-aligned frames: 100 -> 104, 156 -> 160.
+    const decoded = 104 * 160 * 15
+    expect(decoded).toBe(249600)
+    // The trap: the unpadded area divides that count exactly, one frame too many.
+    expect(decoded % (100 * 156)).toBe(0)
+    expect(decoded / (100 * 156)).toBe(16)
+
+    const dims = resolveDims(info, decoded)
+    expect({ padX: dims.padX, padY: dims.padY, z: dims.size.z }).toEqual({
+      padX: 104,
+      padY: 160,
+      z: 15,
+    })
+    expect(dims.size.x).toBe(100)
+    expect(dims.size.y).toBe(156)
+  })
+
+  it("still honours padding the file declares explicitly", () => {
+    // Declared padding that is NOT the multiple-of-8 rule must still win, so the
+    // fix cannot have simply hardcoded alignment.
+    const info = makeInfo({
+      width: 100,
+      height: 156,
+      frames: 15,
+      padRight: 12,
+      padBottom: 4,
+    })
+    const dims = resolveDims(info, 112 * 160 * 15)
+    expect({ padX: dims.padX, padY: dims.padY, z: dims.size.z }).toEqual({
+      padX: 112,
+      padY: 160,
+      z: 15,
+    })
+  })
+})
+
 describe("defaultChannelColors", () => {
   it("maps recognised channel_spec characters", () => {
     expect(defaultChannelColors("rgb", 3)).toEqual([

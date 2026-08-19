@@ -42,7 +42,7 @@ const indexCache = new Map()
 async function handleRequest(request, url) {
   try {
     if (request.method !== "GET" && request.method !== "HEAD") {
-      return new Response(null, { status: 405 })
+      return new Response(null, { status: 405, headers: commonHeaders() })
     }
     const path = url.pathname.slice(1) // strip leading "/"; this IS the OPFS path
     const resolved = await resolvePath(path)
@@ -57,7 +57,10 @@ async function handleRequest(request, url) {
     // Never let a rejection escape the fetch handler: Neuroglancer probes for
     // metadata files that legitimately don't exist, and an unhandled rejection here
     // stalls the whole load instead of just failing one speculative request.
-    return new Response(String((err && err.message) || err), { status: 500 })
+    return new Response(String((err && err.message) || err), {
+      status: 500,
+      headers: commonHeaders(),
+    })
   }
 }
 
@@ -171,14 +174,22 @@ async function getFileAt(segments) {
 }
 
 function notFound() {
-  return new Response(null, { status: 404 })
+  return new Response(null, { status: 404, headers: commonHeaders() })
 }
 
-function baseHeaders(contentType) {
+// Headers every synthesized response carries, error responses included -- see
+// notes/implementation-plan.md section 5.
+function commonHeaders() {
   return {
     "Accept-Ranges": "bytes",
     "Cross-Origin-Resource-Policy": "same-origin",
     "Cache-Control": "no-store",
+  }
+}
+
+function baseHeaders(contentType) {
+  return {
+    ...commonHeaders(),
     "Content-Type": contentType,
   }
 }

@@ -78,6 +78,12 @@ async function ingest(request: IngestRequest): Promise<void> {
     strideX: dims.padX,
     strideY: dims.padY,
   }
+  // Release the request's own handle on the level-0 buffer. Otherwise it stays
+  // reachable through `request` for the whole pyramid loop, and at 16-bit the real
+  // 1210x566x174 volume is ~230 MB per channel -- enough that holding it alongside
+  // its child doubles peak memory. `source` is reassigned each level, so once this
+  // reference is gone the parent level becomes collectable on schedule.
+  request.data = new ArrayBuffer(0)
 
   const scratch = allocate(CHUNK[0] * CHUNK[1] * CHUNK[2], bits)
 
