@@ -30,16 +30,40 @@ and restarted freely.
 
 ## Requirements
 
-- A Chromium-based browser. This relies on OPFS (including from a service worker),
-  `SharedArrayBuffer`, and WebGL 2.
+- A Chromium-based browser (Chrome/Edge 108+). Firefox 111+ has the required APIs but
+  is untested here; note that it disables service workers in Private Browsing. The app
+  relies on OPFS (including from a service worker), `SharedArrayBuffer` and WebGL 2.
 - Node 22+ and pnpm.
 
 ## Development
 
 ```bash
 pnpm install
-pnpm dev      # http://localhost:3000
+pnpm dev          # http://localhost:3000
+pnpm dev:https    # https://<this-host>:3000, reachable from other machines
 ```
+
+### Secure context required
+
+Service workers, OPFS and `SharedArrayBuffer` are all hidden by the browser outside a
+[secure context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts).
+Only `https://` and `http://localhost` qualify — **`http://<ip>:3000` does not**, in any
+browser. Because browsers signal this by simply not defining the API, the symptom is a
+startup error claiming the browser lacks service worker support, which is misleading;
+the app checks `isSecureContext` first so it can name the real cause.
+
+To reach the dev server from another machine, pick one:
+
+- **SSH tunnel** — nothing to configure, and the origin stays `localhost`:
+  ```bash
+  ssh -L 3000:localhost:3000 <this-host>   # then browse http://localhost:3000
+  ```
+- **`pnpm dev:https`** — binds all interfaces with a self-signed certificate. The
+  browser will warn once; accepting it yields a secure context.
+
+The port is `strictPort`, so a clash fails instead of drifting to `:3001`. That matters
+here because the service worker registration and its OPFS contents are keyed to the
+origin, and a drifting port would leave a stale registration behind.
 
 ```bash
 pnpm test     # vitest, unit tests for the pure conversion logic

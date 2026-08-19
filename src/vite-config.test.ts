@@ -44,9 +44,8 @@ describe("vite.config.ts", () => {
     // defined".
     expect(source).toContain('"Cross-Origin-Opener-Policy": "same-origin"')
     expect(source).toContain('"Cross-Origin-Embedder-Policy": "require-corp"')
-    expect(source).toContain(
-      "server: { port: 3000, headers: crossOriginIsolation }"
-    )
-    expect(source).toContain("preview: { headers: crossOriginIsolation }")
+    // Both the dev server and `preview` must set them; asserted by count so the
+    // exact formatting of those two lines is free to change.
+    expect(source.split("headers: crossOriginIsolation").length - 1).toBe(2)
   })
 })

@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react"
 import path from "node:path"
 import { createRequire } from "node:module"
 import { viteStaticCopy } from "vite-plugin-static-copy"
+import basicSsl from "@vitejs/plugin-basic-ssl"
 
 const require = createRequire(import.meta.url)
 
@@ -45,10 +46,17 @@ const crossOriginIsolation = {
   "Cross-Origin-Embedder-Policy": "require-corp",
 }
 
+// Service workers, OPFS and SharedArrayBuffer are all gated behind a secure context.
+// http://localhost qualifies; http://<ip> does not. So reaching the dev server from
+// another machine needs HTTPS -- `pnpm dev:https` sets this and accepts the
+// self-signed-certificate warning once per browser.
+const useHttps = process.env.HTTPS === "1"
+
 export default defineConfig({
   base: "/",
   plugins: [
     react(),
+    ...(useHttps ? [basicSsl()] : []),
     viteStaticCopy({
       targets: [
         { src: `${ngAssetsDir}/*`, dest: "assets" },
@@ -69,8 +77,12 @@ export default defineConfig({
     esbuildOptions: { define: shims },
   },
   worker: { format: "es" },
-  server: { port: 3000, headers: crossOriginIsolation },
-  preview: { headers: crossOriginIsolation },
+  // strictPort matters more here than in a typical app: the service worker
+  // registration, its OPFS contents and any cached Neuroglancer state are all keyed to
+  // the origin. Silently drifting to :3001 when :3000 is taken would leave a stale
+  // registration serving one port while the page runs on another.
+  server: { port: 3000, strictPort: true, headers: crossOriginIsolation },
+  preview: { port: 3000, strictPort: true, headers: crossOriginIsolation },
   test: {
     environment: "node",
     include: ["src/**/*.test.ts"],
