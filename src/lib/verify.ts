@@ -14,11 +14,13 @@ const BYTES_PER_ELEMENT: Record<string, number> = {
 }
 
 export interface LevelProbe {
+  /** Which channel's array this level belongs to. */
+  channel: number
   /** Dataset path from the multiscales metadata, e.g. "0". */
   path: string
   zarrayStatus: number
   shape: number[] | null
-  /** The chunk key that was requested, e.g. "0.1.4.9". */
+  /** The chunk key that was requested, e.g. "1.4.9". */
   chunkKey: string | null
   chunkStatus: number | null
   /** Bytes actually returned. */
@@ -30,59 +32,73 @@ export interface LevelProbe {
 }
 
 export interface DatasetProbe {
-  zattrsStatus: number
+  /** Status of each channel's .zattrs, in channel order. */
+  zattrsStatuses: number[]
   levels: LevelProbe[]
   /** Human-readable problems, empty when everything checks out. */
   problems: string[]
 }
 
-/** Probes every pyramid level's metadata and one chunk near the volume centre. */
+/**
+ * Probes every channel's pyramid: each level's metadata, and one chunk near the volume
+ * center. Each channel is its own zarr array, so each is probed separately -- a channel
+ * whose array never got written is exactly the failure this is here to name, and it is
+ * invisible in a probe that only looks at one of them.
+ */
 export async function probeDataset(
   origin: string,
-  datasetId: string
+  datasetId: string,
+  channelCount: number
 ): Promise<DatasetProbe> {
-  const base = `${origin}/zarr/${datasetId}`
+  const zattrsStatuses: number[] = []
+  const levels: LevelProbe[] = []
   const problems: string[] = []
 
-  const zattrsResponse = await fetch(`${base}/.zattrs`)
-  if (!zattrsResponse.ok) {
-    return {
-      zattrsStatus: zattrsResponse.status,
-      levels: [],
-      problems: [`.zattrs returned ${zattrsResponse.status}`],
-    }
-  }
+  for (let channel = 0; channel < channelCount; channel += 1) {
+    const base = `${origin}/zarr/${datasetId}/c${channel}`
 
-  const zattrs = (await zattrsResponse.json()) as {
-    multiscales?: Array<{ datasets?: Array<{ path?: string }> }>
-  }
-  const paths =
-    zattrs.multiscales?.[0]?.datasets
-      ?.map((dataset) => dataset.path)
-      .filter((path): path is string => typeof path === "string") ?? []
-
-  if (paths.length === 0) problems.push("multiscales lists no datasets")
-
-  const levels: LevelProbe[] = []
-  for (const path of paths) {
-    const probe = await probeLevel(base, path)
-    levels.push(probe)
-
-    if (probe.zarrayStatus !== 200) {
-      problems.push(`level ${path}: .zarray returned ${probe.zarrayStatus}`)
-      continue
-    }
-    if (probe.chunkStatus !== 200) {
+    const zattrsResponse = await fetch(`${base}/.zattrs`)
+    zattrsStatuses.push(zattrsResponse.status)
+    if (!zattrsResponse.ok) {
       problems.push(
-        `level ${path}: chunk ${probe.chunkKey} returned ${probe.chunkStatus}`
+        `channel ${channel}: .zattrs returned ${zattrsResponse.status}`
       )
       continue
     }
-    if (probe.chunkLength !== probe.expectedLength) {
-      problems.push(
-        `level ${path}: chunk ${probe.chunkKey} is ${probe.chunkLength} bytes, ` +
-          `expected ${probe.expectedLength}`
-      )
+
+    const zattrs = (await zattrsResponse.json()) as {
+      multiscales?: Array<{ datasets?: Array<{ path?: string }> }>
+    }
+    const paths =
+      zattrs.multiscales?.[0]?.datasets
+        ?.map((dataset) => dataset.path)
+        .filter((path): path is string => typeof path === "string") ?? []
+
+    if (paths.length === 0) {
+      problems.push(`channel ${channel}: multiscales lists no datasets`)
+    }
+
+    for (const path of paths) {
+      const probe = await probeLevel(base, channel, path)
+      levels.push(probe)
+      const where = `channel ${channel} level ${path}`
+
+      if (probe.zarrayStatus !== 200) {
+        problems.push(`${where}: .zarray returned ${probe.zarrayStatus}`)
+        continue
+      }
+      if (probe.chunkStatus !== 200) {
+        problems.push(
+          `${where}: chunk ${probe.chunkKey} returned ${probe.chunkStatus}`
+        )
+        continue
+      }
+      if (probe.chunkLength !== probe.expectedLength) {
+        problems.push(
+          `${where}: chunk ${probe.chunkKey} is ${probe.chunkLength} bytes, ` +
+            `expected ${probe.expectedLength}`
+        )
+      }
     }
   }
 
@@ -95,11 +111,16 @@ export async function probeDataset(
     )
   }
 
-  return { zattrsStatus: zattrsResponse.status, levels, problems }
+  return { zattrsStatuses, levels, problems }
 }
 
-async function probeLevel(base: string, path: string): Promise<LevelProbe> {
+async function probeLevel(
+  base: string,
+  channel: number,
+  path: string
+): Promise<LevelProbe> {
   const empty: LevelProbe = {
+    channel,
     path,
     zarrayStatus: 0,
     shape: null,
@@ -120,7 +141,7 @@ async function probeLevel(base: string, path: string): Promise<LevelProbe> {
     chunks: number[]
     dtype: string
   }
-  const chunkKey = centreChunkKey(zarray.shape, zarray.chunks)
+  const chunkKey = centerChunkKey(zarray.shape, zarray.chunks)
   const elementBytes = BYTES_PER_ELEMENT[zarray.dtype] ?? 1
   const expectedLength =
     zarray.chunks.reduce((product, size) => product * size, 1) * elementBytes
@@ -146,6 +167,7 @@ async function probeLevel(base: string, path: string): Promise<LevelProbe> {
   }
 
   return {
+    channel,
     path,
     zarrayStatus: 200,
     shape: zarray.shape,
@@ -158,28 +180,32 @@ async function probeLevel(base: string, path: string): Promise<LevelProbe> {
 }
 
 /**
- * Chunk key for the chunk nearest the volume centre, on channel 0. The corner chunk
- * (0.0.0.0) is background in almost any real scan, so probing it cannot distinguish
- * empty data from an empty corner.
+ * Chunk key for the chunk nearest the volume center. The corner chunk (0.0.0) is
+ * background in almost any real scan, so probing it cannot distinguish empty data from
+ * an empty corner.
+ *
+ * Three axes: each channel is its own [z, y, x] array.
  */
-export function centreChunkKey(shape: number[], chunks: number[]): string {
-  const grid = [1, 2, 3].map((axis) => Math.ceil(shape[axis] / chunks[axis]))
-  const centre = grid.map((extent) => Math.floor(extent / 2))
-  return `0.${centre[0]}.${centre[1]}.${centre[2]}`
+export function centerChunkKey(shape: number[], chunks: number[]): string {
+  const center = shape.map((extent, axis) =>
+    Math.floor(Math.ceil(extent / chunks[axis]) / 2)
+  )
+  return center.join(".")
 }
 
 /** One line per level, for display. */
 export function describeProbe(probe: DatasetProbe): string[] {
   return probe.levels.map((level) => {
+    const where = `c${level.channel} level ${level.path}`
     if (level.zarrayStatus !== 200) {
-      return `level ${level.path}: .zarray ${level.zarrayStatus}`
+      return `${where}: .zarray ${level.zarrayStatus}`
     }
     const shape = level.shape ? level.shape.join("×") : "?"
     if (level.chunkStatus !== 200) {
-      return `level ${level.path} [${shape}]: chunk ${level.chunkKey} → ${level.chunkStatus}`
+      return `${where} [${shape}]: chunk ${level.chunkKey} → ${level.chunkStatus}`
     }
     return (
-      `level ${level.path} [${shape}]: chunk ${level.chunkKey} ok, ` +
+      `${where} [${shape}]: chunk ${level.chunkKey} ok, ` +
       `${level.chunkLength}/${level.expectedLength} bytes, max ${level.maxValue}`
     )
   })

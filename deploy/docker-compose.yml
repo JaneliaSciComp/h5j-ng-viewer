@@ -1,0 +1,35 @@
+# Explicit project name. Without it, Compose derives one from the directory this file
+# sits in -- which is `deploy`, the same name a sibling app's deploy directory would
+# have. Two projects sharing a name is not a warning: `docker compose down` in one
+# directory removes containers labelled with that project, including the other app's.
+name: h5j-ng-viewer
+
+services:
+  h5j-ng-viewer:
+    image: nginx:alpine
+    container_name: h5j-ng-viewer
+    restart: unless-stopped
+    ports:
+      # Host port is configurable so this can run alongside another container that has
+      # already claimed 443. Only the host side moves; nginx still listens on 443
+      # inside, so nginx.conf is unchanged. Set it in `.env` beside this file, or
+      # inline: `HTTPS_PORT=8443 docker compose up -d`.
+      - "${HTTPS_PORT:-443}:443"
+
+      # Port 80 exists only to redirect to HTTPS, and that redirect is built from
+      # `$host`, which carries no port -- so on a non-default HTTPS port it would send
+      # people to https://<host>/, i.e. to whatever else is listening on 443. Leave
+      # this commented out unless HTTPS_PORT is 443.
+      # - "80:80"
+    volumes:
+      # The production build produced by `npm run build` (Vite writes `dist/`, not
+      # `build/`). Nginx serves whatever is here on each request, so publishing a new
+      # build is a file copy -- the container is not rebuilt or even restarted.
+      - ../dist:/usr/share/nginx/html:ro
+
+      # The nginx config beside this file.
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
+      # Certs. Self-signed for testing, real ones later, at the same host path either
+      # way so nothing else has to change when they are swapped.
+      - /etc/h5j-ng-viewer/certs:/etc/nginx/ssl:ro

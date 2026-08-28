@@ -1,7 +1,7 @@
 // Drives the real, unmodified public/sw.js under Node against an in-memory OPFS
 // populated by the real ingest primitives (pyramid/gatherChunk/buildZ*). This is the
-// only place that exercises the shipped file itself -- see notes/implementation-plan.md
-// section 5 for the header/range contract being checked here.
+// only place that exercises the shipped file itself: the header and range contract it
+// has to honor for Neuroglancer's chunk fetches.
 
 import { beforeAll, describe, expect, it } from "vitest"
 import {
@@ -156,8 +156,9 @@ const CHANNEL_COLORS = ["#ff0000", "#00ff00"]
 
 const levels: LevelInfo[] = pyramid(SIZE)
 const CHUNK_VOXELS = CHUNK[0] * CHUNK[1] * CHUNK[2]
-// Whole-chunk size: chunks[0] === shape[0], so a chunk spans every channel.
-const WHOLE_CHUNK_BYTES = chunkBytes(BITS, CHANNEL_COUNT)
+// One channel per array, so a chunk is one channel's and its size does not depend on
+// how many channels the container has.
+const CHUNK_BYTES = chunkBytes(BITS)
 
 /** Deterministic, channel-distinguishing, never-zero (so it can't be mistaken for
  * zero-padding fill_value). */
@@ -232,84 +233,59 @@ function expectedChannelBytes(
   return new Uint8Array(scratch.buffer)
 }
 
-/** The bytes a whole-chunk request now resolves to: channel 0's sub-block followed
- * by channel 1's -- see subChunkBytes in src/lib/zarr.ts. */
-function expectedWholeChunkBytes(
-  levelIdx: number,
-  cz: number,
-  cy: number,
-  cx: number
-): Uint8Array {
-  const parts: Uint8Array[] = []
-  for (let c = 0; c < CHANNEL_COUNT; c += 1) {
-    parts.push(expectedChannelBytes(levelIdx, c, cz, cy, cx))
-  }
-  const out = new Uint8Array(WHOLE_CHUNK_BYTES)
-  let offset = 0
-  for (const part of parts) {
-    out.set(part, offset)
-    offset += part.length
-  }
-  return out
-}
-
-/** Path for a chunk key. `c` is the leading (channel-axis) index in the key -- valid
- * requests always pass 0, since chunks[0] === shape[0] makes the channel axis a
- * single chunk; tests that probe the invalid-`c` case pass something else. */
+/** Path for a chunk key. Three indices now: the array is three-dimensional. */
 function chunkKeyPath(
   levelIdx: number,
-  c: number,
+  channel: number,
   cz: number,
   cy: number,
   cx: number
 ): string {
-  return `${levelPath(DATASET_ID, levels[levelIdx].level)}/${c}.${cz}.${cy}.${cx}`
+  const level = levelPath(DATASET_ID, channel, levels[levelIdx].level)
+  return `${level}/${cz}.${cy}.${cx}`
 }
 
 async function writeFixture(root: MemoryDirectory): Promise<void> {
-  await putJson(root, zgroupPath(DATASET_ID), buildZgroup())
-  await putJson(
-    root,
-    zattrsPath(DATASET_ID),
-    buildZattrs({
-      datasetName: "Test Dataset",
-      levels,
-      voxelSize: { x: 0.5, y: 0.5, z: 1.5 },
-      channelNames: CHANNEL_NAMES,
-      channelColors: CHANNEL_COLORS,
-      bits: BITS,
-    })
-  )
-
-  for (let levelIdx = 0; levelIdx < levels.length; levelIdx += 1) {
-    const level = levels[levelIdx]
+  for (let channel = 0; channel < CHANNEL_COUNT; channel += 1) {
+    await putJson(root, zgroupPath(DATASET_ID, channel), buildZgroup())
     await putJson(
       root,
-      zarrayPath(DATASET_ID, level.level),
-      buildZarray(level.size, CHANNEL_COUNT, BITS)
+      zattrsPath(DATASET_ID, channel),
+      buildZattrs({
+        name: CHANNEL_NAMES[channel],
+        levels,
+        voxelSize: { x: 0.5, y: 0.5, z: 1.5 },
+        color: CHANNEL_COLORS[channel],
+        bits: BITS,
+      })
     )
-    const index: LevelIndex = {
-      grid: level.grid,
-      chunkBytes: WHOLE_CHUNK_BYTES,
-    }
-    await putJson(root, levelIndexPath(DATASET_ID, level.level), index)
 
-    const [gz, gy, gx] = level.grid
-    const stride = stridesByLevel[levelIdx]
-    // One packed file per level, every channel interleaved: channel c's sub-block
-    // sits at `c * CHUNK_VOXELS` elements inside each chunk (see subChunkBytes in
-    // src/lib/zarr.ts), matching what src/ingest.worker.ts writes with `writeAt`.
-    const wholeChunkVoxels = CHUNK_VOXELS * CHANNEL_COUNT
-    const packed = new Uint16Array(gz * gy * gx * wholeChunkVoxels)
-    const scratch = new Uint16Array(CHUNK_VOXELS)
-    // z outer, then y, then x -- must match src/ingest.worker.ts exactly.
-    for (let z = 0; z < gz; z += 1) {
-      for (let y = 0; y < gy; y += 1) {
-        for (let x = 0; x < gx; x += 1) {
-          const chunkIndex = (z * gy + y) * gx + x
-          for (let c = 0; c < CHANNEL_COUNT; c += 1) {
+    for (let levelIdx = 0; levelIdx < levels.length; levelIdx += 1) {
+      const level = levels[levelIdx]
+      await putJson(
+        root,
+        zarrayPath(DATASET_ID, channel, level.level),
+        buildZarray(level.size, BITS)
+      )
+      const index: LevelIndex = { grid: level.grid, chunkBytes: CHUNK_BYTES }
+      await putJson(
+        root,
+        levelIndexPath(DATASET_ID, channel, level.level),
+        index
+      )
+
+      const [gz, gy, gx] = level.grid
+      const stride = stridesByLevel[levelIdx]
+      // Chunks appended in z, then y, then x -- must match src/ingest.worker.ts
+      // exactly, because that ordering IS the index the service worker inverts.
+      const packed = new Uint16Array(gz * gy * gx * CHUNK_VOXELS)
+      const scratch = new Uint16Array(CHUNK_VOXELS)
+      let cursor = 0
+      for (let z = 0; z < gz; z += 1) {
+        for (let y = 0; y < gy; y += 1) {
+          for (let x = 0; x < gx; x += 1) {
             gatherChunk(
-              sourcesByLevel[levelIdx][c],
+              sourcesByLevel[levelIdx][channel],
               level.size,
               stride.x,
               stride.y,
@@ -318,19 +294,17 @@ async function writeFixture(root: MemoryDirectory): Promise<void> {
               x,
               scratch
             )
-            packed.set(
-              scratch,
-              chunkIndex * wholeChunkVoxels + c * CHUNK_VOXELS
-            )
+            packed.set(scratch, cursor)
+            cursor += CHUNK_VOXELS
           }
         }
       }
+      await putFile(
+        root,
+        chunksFilePath(DATASET_ID, channel, level.level),
+        new Uint8Array(packed.buffer)
+      )
     }
-    await putFile(
-      root,
-      chunksFilePath(DATASET_ID, level.level),
-      new Uint8Array(packed.buffer)
-    )
   }
 }
 
@@ -388,49 +362,51 @@ async function getResponse(
 
 describe("metadata files", () => {
   it("serves .zgroup as JSON that round-trips", async () => {
-    const res = await getResponse(zgroupPath(DATASET_ID))
+    const res = await getResponse(zgroupPath(DATASET_ID, 0))
     expect(res.status).toBe(200)
     expect(res.headers.get("content-type")).toBe("application/json")
     expectBaseHeaders(res.headers)
     expect(await res.json()).toEqual(buildZgroup())
   })
 
-  it("serves .zattrs as JSON that round-trips", async () => {
-    const res = await getResponse(zattrsPath(DATASET_ID))
-    expect(res.status).toBe(200)
-    expect(res.headers.get("content-type")).toBe("application/json")
-    expect(await res.json()).toEqual(
-      buildZattrs({
-        datasetName: "Test Dataset",
-        levels,
-        voxelSize: { x: 0.5, y: 0.5, z: 1.5 },
-        channelNames: CHANNEL_NAMES,
-        channelColors: CHANNEL_COLORS,
-        bits: BITS,
-      })
-    )
-  })
+  it.each([0, 1])(
+    "serves channel %i's own .zattrs, describing that channel alone",
+    async (channel) => {
+      const res = await getResponse(zattrsPath(DATASET_ID, channel))
+      expect(res.status).toBe(200)
+      expect(res.headers.get("content-type")).toBe("application/json")
+      expect(await res.json()).toEqual(
+        buildZattrs({
+          name: CHANNEL_NAMES[channel],
+          levels,
+          voxelSize: { x: 0.5, y: 0.5, z: 1.5 },
+          color: CHANNEL_COLORS[channel],
+          bits: BITS,
+        })
+      )
+    }
+  )
 
   it.each([0, 1])(
     "serves level %i .zarray and index.json",
     async (levelIdx) => {
       const level = levels[levelIdx]
 
-      const zarrayRes = await getResponse(zarrayPath(DATASET_ID, level.level))
+      const zarrayRes = await getResponse(
+        zarrayPath(DATASET_ID, 0, level.level)
+      )
       expect(zarrayRes.status).toBe(200)
       expect(zarrayRes.headers.get("content-type")).toBe("application/json")
-      expect(await zarrayRes.json()).toEqual(
-        buildZarray(level.size, CHANNEL_COUNT, BITS)
-      )
+      expect(await zarrayRes.json()).toEqual(buildZarray(level.size, BITS))
 
       const indexRes = await getResponse(
-        levelIndexPath(DATASET_ID, level.level)
+        levelIndexPath(DATASET_ID, 0, level.level)
       )
       expect(indexRes.status).toBe(200)
       expect(indexRes.headers.get("content-type")).toBe("application/json")
       expect(await indexRes.json()).toEqual({
         grid: level.grid,
-        chunkBytes: WHOLE_CHUNK_BYTES,
+        chunkBytes: CHUNK_BYTES,
       })
     }
   )
@@ -446,32 +422,49 @@ describe("chunk bytes", () => {
     { label: "level 1, first", levelIdx: 1, cz: 0, cy: 0, cx: 0 },
     { label: "level 1, last", levelIdx: 1, cz: 1, cy: 1, cx: 1 },
   ])(
-    "returns exactly channel 0's sub-block followed by channel 1's for $label",
+    "returns exactly that channel's chunk for $label",
     async ({ levelIdx, cz, cy, cx }) => {
-      const path = chunkKeyPath(levelIdx, 0, cz, cy, cx)
-      const res = await getResponse(path)
-      expect(res.status).toBe(200)
-      expect(res.headers.get("content-type")).toBe("application/octet-stream")
-      const body = new Uint8Array(await res.arrayBuffer())
-      expect(
-        bytesEqual(body, expectedWholeChunkBytes(levelIdx, cz, cy, cx))
-      ).toBe(true)
+      for (let channel = 0; channel < CHANNEL_COUNT; channel += 1) {
+        const path = chunkKeyPath(levelIdx, channel, cz, cy, cx)
+        const res = await getResponse(path)
+        expect(res.status).toBe(200)
+        expect(res.headers.get("content-type")).toBe("application/octet-stream")
+        const body = new Uint8Array(await res.arrayBuffer())
+        expect(
+          bytesEqual(body, expectedChannelBytes(levelIdx, channel, cz, cy, cx))
+        ).toBe(true)
+      }
     }
   )
+
+  it("serves different bytes for the same key under different channels", async () => {
+    // Each channel is its own array, so the channel is part of the path rather than an
+    // index inside the key. Getting that wrong would serve one channel's data for all
+    // of them, which renders as plausible-looking but identical layers.
+    const first = await (
+      await getResponse(chunkKeyPath(0, 0, 1, 1, 1))
+    ).arrayBuffer()
+    const second = await (
+      await getResponse(chunkKeyPath(0, 1, 1, 1, 1))
+    ).arrayBuffer()
+    expect(bytesEqual(new Uint8Array(first), new Uint8Array(second))).toBe(
+      false
+    )
+  })
 
   it("reports Content-Length as the whole-chunk size, not the packed file size", async () => {
     const path = chunkKeyPath(0, 0, 1, 1, 1)
     const res = await getResponse(path)
-    expect(res.headers.get("content-length")).toBe(String(WHOLE_CHUNK_BYTES))
+    expect(res.headers.get("content-length")).toBe(String(CHUNK_BYTES))
 
     const [gz, gy, gx] = levels[0].grid
-    const packedFileSize = gz * gy * gx * WHOLE_CHUNK_BYTES
-    expect(packedFileSize).toBeGreaterThan(WHOLE_CHUNK_BYTES)
+    const packedFileSize = gz * gy * gx * CHUNK_BYTES
+    expect(packedFileSize).toBeGreaterThan(CHUNK_BYTES)
   })
 
   it("serves the same chunk correctly on a second request (index.json memo cache)", async () => {
     const path = chunkKeyPath(0, 0, 0, 0, 0)
-    const expected = expectedWholeChunkBytes(0, 0, 0, 0)
+    const expected = expectedChannelBytes(0, 0, 0, 0, 0)
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const res = await getResponse(path)
       expect(
@@ -479,23 +472,16 @@ describe("chunk bytes", () => {
       ).toBe(true)
     }
   })
-
-  it("a chunk key with c other than 0 returns 404 -- the channel axis is a single chunk", async () => {
-    const res = await getResponse(chunkKeyPath(0, 1, 0, 0, 0))
-    expect(res.status).toBe(404)
-  })
 })
 
 describe("range requests", () => {
   const path = chunkKeyPath(0, 0, 1, 1, 1)
-  const expected = expectedWholeChunkBytes(0, 1, 1, 1)
+  const expected = expectedChannelBytes(0, 0, 1, 1, 1)
 
   it("bytes=0-0 is the size probe: 206, one byte, correct content-range", async () => {
     const res = await getResponse(path, { headers: { Range: "bytes=0-0" } })
     expect(res.status).toBe(206)
-    expect(res.headers.get("content-range")).toBe(
-      `bytes 0-0/${WHOLE_CHUNK_BYTES}`
-    )
+    expect(res.headers.get("content-range")).toBe(`bytes 0-0/${CHUNK_BYTES}`)
     const body = new Uint8Array(await res.arrayBuffer())
     expect(body.length).toBe(1)
     expect(body[0]).toBe(expected[0])
@@ -505,7 +491,7 @@ describe("range requests", () => {
     const res = await getResponse(path, { headers: { Range: "bytes=100-199" } })
     expect(res.status).toBe(206)
     expect(res.headers.get("content-range")).toBe(
-      `bytes 100-199/${WHOLE_CHUNK_BYTES}`
+      `bytes 100-199/${CHUNK_BYTES}`
     )
     const body = new Uint8Array(await res.arrayBuffer())
     expect(bytesEqual(body, expected.slice(100, 200))).toBe(true)
@@ -515,7 +501,7 @@ describe("range requests", () => {
     const res = await getResponse(path, { headers: { Range: "bytes=1000-" } })
     expect(res.status).toBe(206)
     expect(res.headers.get("content-range")).toBe(
-      `bytes 1000-${WHOLE_CHUNK_BYTES - 1}/${WHOLE_CHUNK_BYTES}`
+      `bytes 1000-${CHUNK_BYTES - 1}/${CHUNK_BYTES}`
     )
     const body = new Uint8Array(await res.arrayBuffer())
     expect(bytesEqual(body, expected.slice(1000))).toBe(true)
@@ -524,13 +510,11 @@ describe("range requests", () => {
   it("responds 416 for an unsatisfiable range", async () => {
     const res = await getResponse(path, {
       headers: {
-        Range: `bytes=${WHOLE_CHUNK_BYTES}-${WHOLE_CHUNK_BYTES + 10}`,
+        Range: `bytes=${CHUNK_BYTES}-${CHUNK_BYTES + 10}`,
       },
     })
     expect(res.status).toBe(416)
-    expect(res.headers.get("content-range")).toBe(
-      `bytes */${WHOLE_CHUNK_BYTES}`
-    )
+    expect(res.headers.get("content-range")).toBe(`bytes */${CHUNK_BYTES}`)
   })
 })
 
@@ -550,7 +534,7 @@ describe("HEAD requests", () => {
   })
 
   it("matches GET headers on a metadata file, with no body", async () => {
-    const path = zattrsPath(DATASET_ID)
+    const path = zattrsPath(DATASET_ID, 0)
     const getRes = await getResponse(path)
     const headRes = await getResponse(path, { method: "HEAD" })
     expect(headRes.status).toBe(200)
@@ -563,30 +547,37 @@ describe("HEAD requests", () => {
 
 describe("method handling", () => {
   it("rejects PUT with 405", async () => {
-    const res = await getResponse(zattrsPath(DATASET_ID), { method: "PUT" })
+    const res = await getResponse(zattrsPath(DATASET_ID, 0), { method: "PUT" })
     expect(res.status).toBe(405)
   })
 })
 
 describe("not found, and always resolves rather than rejects", () => {
   it.each([
-    { label: "missing dataset", path: "zarr/does-not-exist/.zattrs" },
-    { label: "missing level", path: `${levelPath(DATASET_ID, 99)}/.zarray` },
-    { label: "channel axis (c) not 0", path: chunkKeyPath(0, 99, 1, 1, 1) },
+    { label: "missing dataset", path: "zarr/does-not-exist/c0/.zattrs" },
+    {
+      label: "missing channel",
+      path: `${levelPath(DATASET_ID, 9, 0)}/.zarray`,
+    },
+    { label: "missing level", path: `${levelPath(DATASET_ID, 0, 99)}/.zarray` },
     { label: "out-of-range z", path: chunkKeyPath(0, 0, 99, 1, 1) },
     { label: "out-of-range y", path: chunkKeyPath(0, 0, 1, 99, 1) },
     { label: "out-of-range x", path: chunkKeyPath(0, 0, 1, 1, 99) },
     {
       label: "malformed key: wrong part count",
-      path: `${levelPath(DATASET_ID, 0)}/1.2.3`,
+      path: `${levelPath(DATASET_ID, 0, 0)}/1.2`,
+    },
+    {
+      label: "malformed key: four indices, the old shape",
+      path: `${levelPath(DATASET_ID, 0, 0)}/0.1.2.3`,
     },
     {
       label: "malformed key: non-numeric",
-      path: `${levelPath(DATASET_ID, 0)}/a.b.c.d`,
+      path: `${levelPath(DATASET_ID, 0, 0)}/a.b.c`,
     },
     {
       label: "malformed key: negative index",
-      path: `${levelPath(DATASET_ID, 0)}/0.-1.0.0`,
+      path: `${levelPath(DATASET_ID, 0, 0)}/-1.0.0`,
     },
   ])("$label -> 404, resolves", async ({ path }) => {
     const captured = dispatchFetch(requestFor(path))

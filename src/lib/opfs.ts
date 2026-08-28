@@ -138,7 +138,7 @@ export async function openPackedWriter(path: string): Promise<PackedWriter> {
   const fileHandle = await dirHandle.getFileHandle(name, { create: true })
 
   // createSyncAccessHandle() only exists inside a worker. It is the whole reason
-  // D2 packs chunks into one file per level: it turns ~10k open/write/close
+  // chunks are packed into one file per level: it turns ~10k open/write/close
   // round-trips into one open plus a tight loop of synchronous writes. Always
   // preferred; the ingest worker's hot loop depends on this branch being taken.
   //

@@ -1,6 +1,7 @@
 import { StrictMode } from "react"
 import { createRoot } from "react-dom/client"
 import { App } from "@/App"
+import { StoreProvider } from "@/state/store"
 import "@/index.css"
 
 /**
@@ -17,7 +18,7 @@ function unsupportedReason(): string | null {
       `workers, OPFS and SharedArrayBuffer -- all of which this viewer needs. ` +
       `Only https:// and http://localhost qualify; a bare IP over http does not. ` +
       `Either browse via http://localhost (an "ssh -L 3000:localhost:3000" tunnel ` +
-      `keeps the origin on localhost), or serve over HTTPS with "pnpm dev:https".`
+      `keeps the origin on localhost), or serve over HTTPS with "npm run dev:https".`
     )
   }
   if (!("serviceWorker" in navigator)) {
@@ -68,7 +69,9 @@ registerServiceWorker().then(
   () =>
     root.render(
       <StrictMode>
-        <App />
+        <StoreProvider>
+          <App />
+        </StoreProvider>
       </StrictMode>
     ),
   (error: unknown) => {

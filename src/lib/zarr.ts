@@ -1,7 +1,7 @@
 // OME-Zarr 0.4 / zarr v2 metadata builders plus the pure numeric helpers ingest
 // and the service worker both depend on: chunk-grid math, the downsample pyramid,
-// and the chunk gather/downsample kernels themselves. See notes/implementation-plan.md
-// section 6 for the on-disk layout this produces.
+// and the chunk gather/downsample kernels themselves. The layout it produces is one
+// packed file per pyramid level, with chunks in z-outer, y, x order.
 
 import type { BitDepth, LevelInfo, Vec3 } from "@/types"
 
@@ -20,7 +20,7 @@ export function zarrDtype(bits: BitDepth): "|u1" | "<u2" {
 }
 
 /**
- * Largest value the decoded data can hold. F11: the 16-bit path carries UNSCALED
+ * Largest value the decoded data can hold. The 16-bit path carries UNSCALED
  * 12-bit values out of the H.265 decode, so this is 4095 -- not 65535 -- and the
  * `invlerp` shader range must match or the viewer will look nearly black.
  */
@@ -37,28 +37,20 @@ export function chunkGrid(size: Vec3): [number, number, number] {
   ]
 }
 
-/** Uncompressed bytes in one chunk. Also the chunk stride in the packed file. */
-/** Voxels in one channel's spatial sub-block of a chunk. */
-export function subChunkVoxels(): number {
+/** Voxels in one chunk. */
+export function chunkVoxels(): number {
   return CHUNK[0] * CHUNK[1] * CHUNK[2]
 }
 
-/** Bytes in one channel's sub-block of a chunk. */
-export function subChunkBytes(bits: BitDepth): number {
-  return subChunkVoxels() * bytesPerVoxel(bits)
-}
-
 /**
- * Bytes in one whole chunk, spanning EVERY channel.
+ * Uncompressed bytes in one chunk, which is also its stride in the packed file.
  *
- * Neuroglancer requires a channel dimension to "map with stride 1 to a single data
- * chunk", so `chunks[0]` must equal `shape[0]` -- a channel axis split across chunks
- * makes it refuse to build a render layer, which shows up as a blank viewer that never
- * even requests chunks. Within a chunk the layout is C-order [c][z][y][x], so each
- * channel occupies a contiguous `subChunkBytes` block.
+ * Independent of how many channels the container has, because each channel is its own
+ * three-dimensional array. It was not always: packing every channel into one chunk made
+ * this scale with the channel count, so an eight-channel file would have had 4 MB chunks.
  */
-export function chunkBytes(bits: BitDepth, channelCount: number): number {
-  return subChunkBytes(bits) * channelCount
+export function chunkBytes(bits: BitDepth): number {
+  return chunkVoxels() * bytesPerVoxel(bits)
 }
 
 /**
@@ -91,16 +83,13 @@ export function buildZgroup(): object {
   return { zarr_format: 2 }
 }
 
-export function buildZarray(
-  size: Vec3,
-  channelCount: number,
-  bits: BitDepth
-): object {
+export function buildZarray(size: Vec3, bits: BitDepth): object {
   return {
     zarr_format: 2,
-    shape: [channelCount, size.z, size.y, size.x],
-    // chunks[0] === shape[0] is a hard Neuroglancer requirement; see chunkBytes.
-    chunks: [channelCount, ...CHUNK],
+    // Three-dimensional: one array per channel, so there is no channel axis to place
+    // and no constraint on how it may be chunked.
+    shape: [size.z, size.y, size.x],
+    chunks: [...CHUNK],
     dtype: zarrDtype(bits),
     compressor: null,
     fill_value: 0,
@@ -110,25 +99,24 @@ export function buildZarray(
   }
 }
 
+/** The multiscale metadata for one channel's own group. */
 export function buildZattrs(opts: {
-  datasetName: string
+  /** Name of this channel's volume, as Neuroglancer shows it on the layer. */
+  name: string
   levels: LevelInfo[]
   /** micrometers per voxel at level 0 */
   voxelSize: Vec3
-  channelNames: string[]
-  channelColors: string[]
+  color: string
   bits: BitDepth
 }): object {
-  const { datasetName, levels, voxelSize, channelNames, channelColors, bits } =
-    opts
+  const { name, levels, voxelSize, color, bits } = opts
   const max = maxValue(bits)
   return {
     multiscales: [
       {
         version: "0.4",
-        name: datasetName,
+        name,
         axes: [
-          { name: "c", type: "channel" },
           { name: "z", type: "space", unit: "micrometer" },
           { name: "y", type: "space", unit: "micrometer" },
           { name: "x", type: "space", unit: "micrometer" },
@@ -139,7 +127,6 @@ export function buildZattrs(opts: {
             {
               type: "scale",
               scale: [
-                1,
                 voxelSize.z * lvl.factor,
                 voxelSize.y * lvl.factor,
                 voxelSize.x * lvl.factor,
@@ -151,13 +138,15 @@ export function buildZattrs(opts: {
     ],
     omero: {
       version: "0.4",
-      channels: channelNames.map((label, i) => ({
-        label,
-        // omero convention: 6 hex digits, no leading "#".
-        color: channelColors[i].replace(/^#/, ""),
-        active: true,
-        window: { min: 0, max, start: 0, end: max },
-      })),
+      channels: [
+        {
+          label: name,
+          // omero convention: 6 hex digits, no leading "#".
+          color: color.replace(/^#/, ""),
+          active: true,
+          window: { min: 0, max, start: 0, end: max },
+        },
+      ],
     },
   }
 }
@@ -202,7 +191,7 @@ export function gatherChunk<T extends Uint8Array | Uint16Array>(
 }
 
 /**
- * 2x box-downsample in x, y and z. Averages the 2x2x2 neighbourhood, clamping at
+ * 2x box-downsample in x, y and z. Averages the 2x2x2 neighborhood, clamping at
  * odd boundaries so only in-range samples are averaged (never reads out of bounds,
  * never divides by the wrong count). Accumulate in a plain number -- a Uint16
  * accumulator would silently wrap when summing up to eight 12-bit-range samples.

@@ -1,4 +1,9 @@
-// Chunk and downsample one decoded channel into OPFS.
+// Chunk and downsample one decoded channel into its own OME-Zarr array in OPFS.
+//
+// One array per channel, so this run owns every byte it writes: chunks are appended in
+// order and a chunk is complete the moment it is written. When all channels shared an
+// array a chunk could not be finished until the last channel had contributed to it,
+// which is what made a partly-converted dataset unsafe to display.
 //
 // Runs in a dedicated worker for two reasons: it keeps the multi-second chunking loop
 // off the UI thread, and `createSyncAccessHandle()` (the fast OPFS write path) is
@@ -6,32 +11,15 @@
 // and so needs a document; the main thread decodes and transfers the buffer in.
 
 import {
-  buildZarray,
-  buildZattrs,
-  buildZgroup,
-  CHUNK,
-  chunkBytes,
+  chunkVoxels,
   downsample2x,
-  subChunkBytes,
   gatherChunk,
   pyramid,
 } from "@/lib/zarr"
-import { openPackedWriter, writeJson } from "@/lib/opfs"
+import { openPackedWriter } from "@/lib/opfs"
 import { measureChannel } from "@/lib/stats"
-import {
-  chunksFilePath,
-  levelIndexPath,
-  zarrayPath,
-  zattrsPath,
-  zgroupPath,
-} from "@/lib/paths"
-import type {
-  IngestMessage,
-  IngestRequest,
-  LevelIndex,
-  LevelInfo,
-  Vec3,
-} from "@/types"
+import { chunksFilePath } from "@/lib/paths"
+import type { IngestMessage, IngestRequest, Vec3 } from "@/types"
 
 type VoxelArray = Uint8Array | Uint16Array
 
@@ -57,16 +45,8 @@ self.onmessage = async (event: MessageEvent<IngestRequest>) => {
 }
 
 async function ingest(request: IngestRequest): Promise<void> {
-  // A partially ingested dataset is still readable: zarr treats a missing chunk as
-  // fill_value, so channels that have not been written yet render as zeros instead of
-  // failing the load. That is why each channel gets its own packed file.
-  const { datasetId, bits, dims, channelIndex, channelCount } = request
+  const { datasetId, bits, dims, channelIndex } = request
   const levels = pyramid(dims.size)
-
-  // Metadata is rewritten on every channel rather than only on the first. It is four
-  // small JSON documents, and writing it unconditionally means a re-ingest or an
-  // out-of-order channel cannot leave a dataset described by stale metadata.
-  await writeMetadata(request, levels)
 
   const totalChunks = levels.reduce(
     (sum, level) => sum + level.grid[0] * level.grid[1] * level.grid[2],
@@ -104,7 +84,7 @@ async function ingest(request: IngestRequest): Promise<void> {
     ),
   })
 
-  const scratch = allocate(CHUNK[0] * CHUNK[1] * CHUNK[2], bits)
+  const scratch = allocate(chunkVoxels(), bits)
 
   for (const level of levels) {
     if (level.level > 0) {
@@ -138,25 +118,13 @@ async function ingest(request: IngestRequest): Promise<void> {
     })
 
     const writer = await openPackedWriter(
-      chunksFilePath(datasetId, level.level)
+      chunksFilePath(datasetId, channelIndex, level.level)
     )
     try {
       const [gz, gy, gx] = level.grid
-      const wholeChunk = chunkBytes(bits, channelCount)
-      const perChannel = subChunkBytes(bits)
-      // Reserve the level's full extent up front. Only the last channel writes the
-      // final chunk's tail, so without this the file is short of a whole chunk while
-      // earlier channels are still ingesting -- and the viewer, which mounts after the
-      // first channel, would get a 404 for that chunk.
-      writer.ensureSize(gz * gy * gx * wholeChunk)
       // z outer, then y, then x. This ordering IS the index: the service worker
       // recovers a chunk's offset as ((z * gy + y) * gx + x) * chunkBytes, and that
       // is the only place the arithmetic exists. Do not reorder these loops.
-      //
-      // A chunk spans every channel, so this channel's sub-block sits at a fixed
-      // offset inside each chunk rather than at the write cursor -- hence writeAt.
-      // Sub-blocks belonging to channels not yet ingested stay as zeros, which zarr
-      // reads as fill_value.
       for (let z = 0; z < gz; z += 1) {
         for (let y = 0; y < gy; y += 1) {
           for (let x = 0; x < gx; x += 1) {
@@ -170,11 +138,9 @@ async function ingest(request: IngestRequest): Promise<void> {
               x,
               scratch
             )
-            const chunkIndex = (z * gy + y) * gx + x
-            writer.writeAt(
-              scratch,
-              chunkIndex * wholeChunk + channelIndex * perChannel
-            )
+            // Straight append: this array is this channel's alone, so the write
+            // cursor is already where the chunk belongs.
+            writer.write(scratch)
             writtenChunks += 1
           }
         }
@@ -188,46 +154,6 @@ async function ingest(request: IngestRequest): Promise<void> {
   }
 
   post({ type: "done", levels })
-}
-
-async function writeMetadata(
-  request: IngestRequest,
-  levels: LevelInfo[]
-): Promise<void> {
-  const {
-    datasetId,
-    datasetName,
-    bits,
-    dims,
-    channelCount,
-    channelNames,
-    channelColors,
-  } = request
-
-  await writeJson(zgroupPath(datasetId), buildZgroup())
-  await writeJson(
-    zattrsPath(datasetId),
-    buildZattrs({
-      datasetName,
-      levels,
-      voxelSize: dims.voxelSize,
-      channelNames,
-      channelColors,
-      bits,
-    })
-  )
-
-  for (const level of levels) {
-    await writeJson(
-      zarrayPath(datasetId, level.level),
-      buildZarray(level.size, channelCount, bits)
-    )
-    const index: LevelIndex = {
-      grid: level.grid,
-      chunkBytes: chunkBytes(bits, channelCount),
-    }
-    await writeJson(levelIndexPath(datasetId, level.level), index)
-  }
 }
 
 function view(buffer: ArrayBuffer, bits: 8 | 16): VoxelArray {

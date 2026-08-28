@@ -3,7 +3,7 @@ import type { ReactElement, ReactNode } from "react"
 
 /**
  * Thin wrapper over the native `<dialog>` element, which already provides the modal
- * behaviour worth having: a backdrop, focus trapping, inert background content and
+ * behavior worth having: a backdrop, focus trapping, inert background content and
  * Esc-to-dismiss. Driving it from `open` means the only custom logic is keeping the
  * DOM's own open state in step with React's.
  */
@@ -42,6 +42,7 @@ export function Dialog(props: {
           <button
             type="button"
             onClick={props.onClose}
+            title="Close"
             aria-label="Close dialog"
           >
             ✕

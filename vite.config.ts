@@ -48,7 +48,7 @@ const crossOriginIsolation = {
 
 // Service workers, OPFS and SharedArrayBuffer are all gated behind a secure context.
 // http://localhost qualifies; http://<ip> does not. So reaching the dev server from
-// another machine needs HTTPS -- `pnpm dev:https` sets this and accepts the
+// another machine needs HTTPS -- `npm run dev:https` sets this and accepts the
 // self-signed-certificate warning once per browser.
 const useHttps = process.env.HTTPS === "1"
 

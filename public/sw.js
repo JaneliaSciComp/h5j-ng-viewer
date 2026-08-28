@@ -1,7 +1,7 @@
 // Service worker: virtual HTTP origin for the OME-Zarr hierarchy in OPFS.
 //
-// Neuroglancer can only read http(s)/gs/s3 kvstores (see notes/implementation-plan.md
-// F3) -- there is no in-memory root store it can point at. This worker intercepts
+// Neuroglancer can only read http(s)/gs/s3 kvstores -- there is no in-memory or
+// local-file root store it can point at. This worker intercepts
 // same-origin requests under /zarr/ and answers them out of OPFS so a stock
 // Neuroglancer build believes it is talking to a real server.
 //
@@ -9,14 +9,17 @@
 // cannot import anything. The OPFS layout mirrored below is defined authoritatively in
 // src/lib/paths.ts; keep the two in sync by hand.
 //
-//   zarr/<datasetId>/.zgroup
-//   zarr/<datasetId>/.zattrs
-//   zarr/<datasetId>/<level>/.zarray
-//   zarr/<datasetId>/<level>/index.json    -> { grid: [gz, gy, gx], chunkBytes }
-//   zarr/<datasetId>/<level>/chunks.bin    -> every chunk, packed contiguously in
-//                                              z-outer, y, x order. A chunk spans the
-//                                              whole channel axis, so `c` in a chunk
-//                                              key is always 0.
+// Each channel is its own zarr array, so each becomes its own Neuroglancer layer that
+// resolves and renders the moment that channel finishes converting, independently of
+// the others.
+//
+//   zarr/<datasetId>/c<channel>/.zgroup
+//   zarr/<datasetId>/c<channel>/.zattrs
+//   zarr/<datasetId>/c<channel>/<level>/.zarray
+//   zarr/<datasetId>/c<channel>/<level>/index.json -> { grid: [gz, gy, gx], chunkBytes }
+//   zarr/<datasetId>/c<channel>/<level>/chunks.bin -> every chunk of that channel,
+//                                              packed contiguously in z-outer, y, x
+//                                              order.
 //
 // The worker may be killed and restarted between any two requests (it has no
 // lifetime guarantee), so it must not hold any ingest-derived state.
@@ -91,18 +94,14 @@ async function resolvePath(path) {
 
   const { grid, chunkBytes } = index
   const [gz, gy, gx] = grid
-  const { c, z, y, x } = chunkKey
-  // chunks[0] === shape[0], so the channel axis is a single chunk and the only valid
-  // index on it is 0. Every channel's data lives inside the chunk this resolves to.
-  if (c !== 0) return null
+  const { z, y, x } = chunkKey
   if (z < 0 || z >= gz || y < 0 || y >= gy || x < 0 || x >= gx) return null
 
   const file = await getFileAt(levelSegments.concat("chunks.bin"))
   if (!file) return null
 
-  // The only place in the codebase this arithmetic exists (see src/lib/paths.ts):
-  // the ingest worker just appends chunks in z -> y -> x order, so a chunk's byte
-  // offset in the packed file is this single multiply-and-add.
+  // The ingest worker appends chunks in z -> y -> x order into one file per channel
+  // per level, so a chunk's byte offset is this single multiply-and-add.
   const offset = ((z * gy + y) * gx + x) * chunkBytes
   if (offset + chunkBytes > file.size) return null
 
@@ -128,16 +127,16 @@ async function readWholeFile(segments) {
   }
 }
 
-// Chunk keys are zarr v2 keys with dimension_separator "." and 4 indices because the
-// array is [c, z, y, x], e.g. "1.2.3.4". Anything else (metadata files, garbage) is
-// not a chunk key.
+// Chunk keys are zarr v2 keys with dimension_separator "." and 3 indices because each
+// channel is its own [z, y, x] array, e.g. "2.3.4". Anything else (metadata files,
+// garbage) is not a chunk key.
 function parseChunkKey(name) {
   const parts = name.split(".")
-  if (parts.length !== 4) return null
+  if (parts.length !== 3) return null
   const nums = parts.map(Number)
   if (nums.some((n) => !Number.isInteger(n) || n < 0)) return null
-  const [c, z, y, x] = nums
-  return { c, z, y, x }
+  const [z, y, x] = nums
+  return { z, y, x }
 }
 
 async function getLevelIndex(levelSegments) {
@@ -181,8 +180,7 @@ function notFound() {
   return new Response(null, { status: 404, headers: commonHeaders() })
 }
 
-// Headers every synthesized response carries, error responses included -- see
-// notes/implementation-plan.md section 5.
+// Headers every synthesized response carries, error responses included.
 function commonHeaders() {
   return {
     "Accept-Ranges": "bytes",
