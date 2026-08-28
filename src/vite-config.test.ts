@@ -1,4 +1,4 @@
-// A source-level guard on vite.config.ts, not a behavioural test. It exists because
+// A source-level guard on vite.config.ts, not a behavioral test. It exists because
 // the regressions it catches are silent: nothing fails, the build succeeds, and the
 // app shows a black screen or throws only on a code path no unit test reaches.
 //

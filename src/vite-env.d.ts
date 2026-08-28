@@ -13,8 +13,27 @@ declare module "@janelia/react-neuroglancer" {
     initialViewerOptions?: Record<string, unknown>
     onViewerInit?: (viewer: NeuroglancerViewerInstance) => void
   }>
+  /**
+   * What the hook reports on every `viewer.state.changed`. `raw` is the viewer's own
+   * `toJSON()` -- the same JSON Neuroglancer writes into its URL fragment -- and the
+   * fields beside it are a convenience projection of it.
+   */
+  export interface NeuroglancerSnapshot {
+    position?: number[]
+    orientation?: number[]
+    zoom?: number
+    layers?: Array<{ name?: string; type?: string; visible?: boolean }>
+    raw?: Record<string, unknown>
+  }
+
+  /**
+   * `setState` merges: it replaces `layers` wholesale when given, folds
+   * position/orientation/zoom into the navigation state, and leaves everything else
+   * as it was. There is no partial-layer update, which is why a caller must always
+   * pass a layer built from current state rather than from defaults.
+   */
   export function useNeuroglancer(viewer: NeuroglancerViewerInstance | null): {
-    snapshot: unknown
+    snapshot: NeuroglancerSnapshot
     setState: (
       updater:
         Record<string, unknown> | ((state: Record<string, unknown>) => unknown)
@@ -52,7 +71,23 @@ declare module "@janelia/web-h5j-loader" {
     isLoaded: () => boolean
     setProgress: (cb: (p: { ratio: number }) => void) => void
     run: (...args: string[]) => Promise<void>
-    FS: (action: string, ...args: unknown[]) => Uint8Array
+    /**
+     * Bridge to ffmpeg.wasm's in-memory (emscripten MEMFS) filesystem:
+     * `FS(method, ...args)` calls emscripten's `FS[method]`. Overloaded for the
+     * methods this app uses so callers get real types rather than casts; the final
+     * signature keeps the rest of the API reachable.
+     *
+     * `readFile` allocates a fresh `Uint8Array` and copies into it (verified in
+     * `@ffmpeg/core`'s `ffmpeg-core.js`), so the value it returns does NOT alias the
+     * file and stays valid after an `unlink`.
+     */
+    FS: {
+      (action: "readFile", path: string): Uint8Array
+      (action: "writeFile", path: string, data: Uint8Array): void
+      (action: "unlink", path: string): void
+      (action: "readdir", path: string): string[]
+      (action: string, ...args: unknown[]): unknown
+    }
     exit: () => void
   }
 }

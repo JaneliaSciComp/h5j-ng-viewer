@@ -1,5 +1,5 @@
 // Shared contract between the H5J reader, the ingest worker, the zarr writer and the
-// viewer-state builder. Nothing here has behaviour; see src/lib/* for that.
+// viewer-state builder. Nothing here has behavior; see src/lib/* for that.
 
 /** Voxel bit depth requested from the H5J loader. */
 export type BitDepth = 8 | 16
@@ -27,7 +27,7 @@ export interface H5JInfo {
   nominalSize: Vec3
   /** Voxel size in micrometers, or undefined when absent or zero. */
   voxelSize?: Vec3
-  /** e.g. "r", "rgb", "sgr" -- drives default channel colours. */
+  /** e.g. "r", "rgb", "sgr" -- drives default channel colors. */
   channelSpec?: string
   /** Physical unit reported by the file, e.g. "micron". */
   unit?: string
@@ -50,6 +50,38 @@ export interface ResolvedDims {
   voxelSize: Vec3
   /** Human-readable notes to surface in the UI. Empty when everything reconciled. */
   warnings: string[]
+}
+
+/**
+ * What the user can change about the rendering. Everything here is per channel, indexed
+ * by the channel's own position on the `c` axis so hiding or recoloring one never shifts
+ * another -- except `volumeRendering`, which is one choice about the whole view and lives
+ * here rather than in `ui` because it IS a rendering property.
+ *
+ * This is the single source of truth the layers are derived from: a late-arriving
+ * measurement must be folded into it rather than rebuilt around it, or it would discard
+ * whatever the user has changed meanwhile.
+ */
+export interface ChannelControls {
+  visible: boolean[]
+  /** CSS hex, e.g. "#ff00ff". */
+  colors: string[]
+  /** 0..1. */
+  opacity: number[]
+  /** Measured display range per channel; a hole falls back to the dtype range. */
+  contrast: Array<[number, number] | undefined>
+  /**
+   * Whether the 3D panel shows a projection of the volume rather than only the
+   * cross-section planes. Off by default: it raycasts, and the cost is worth paying only
+   * when asked for.
+   */
+  volumeRendering: boolean
+  /**
+   * Samples along each ray of that projection, which is also what picks the pyramid
+   * level it reads. Higher is finer and costs proportionally more. See
+   * `lib/projection.ts` for the ladder of allowed values.
+   */
+  projectionSamples: number
 }
 
 /** Geometry of one pyramid level. */
@@ -79,15 +111,12 @@ export type IngestPhase = "chunking" | "downsampling" | "writing" | "done"
 /** Main thread -> ingest worker. `data` is transferred, not copied. */
 export interface IngestRequest {
   datasetId: string
-  datasetName: string
-  /** Index of this channel on the zarr `c` axis. */
+  /** Which channel this run converts. Its array is `c<channelIndex>` in the dataset. */
   channelIndex: number
-  /** Total length of the `c` axis, i.e. how many channels the user selected. */
-  channelCount: number
-  /** Names of all selected channels, in `c`-axis order. */
-  channelNames: string[]
-  /** CSS colours for all selected channels, in `c`-axis order. */
-  channelColors: string[]
+  /** Name for this channel's volume, shown on the Neuroglancer layer. */
+  channelName: string
+  /** Its rendering color, recorded in the omero metadata. */
+  channelColor: string
   bits: BitDepth
   dims: ResolvedDims
   /** Decoded voxels for this channel, padded, in [z][y][x] order with x fastest. */

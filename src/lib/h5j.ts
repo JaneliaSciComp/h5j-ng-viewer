@@ -1,7 +1,6 @@
 // H5J ingestion: open the container, read its attrs into a typed H5JInfo, decode a
 // channel through ffmpeg.wasm, and reconcile the nominal geometry against what the
-// decoder actually produced. See notes/implementation-plan.md section 0 (F6-F12) and
-// section 4 for the background this file implements.
+// decoder actually produced.
 
 import type {
   BitDepth,
@@ -26,13 +25,14 @@ import { createFFmpeg } from "@ffmpeg/ffmpeg"
 let ffmpegPromise: Promise<FFmpegInstance> | undefined
 
 /**
- * Memoised ffmpeg.wasm instance, loaded once and reused across channels/files
- * (F6: init takes ~1s, and decoding must happen on the main thread anyway).
+ * Memoized ffmpeg.wasm instance, loaded once and reused across channels/files
+ * Init takes ~1s, and ffmpeg.wasm 0.10 injects a <script> tag, so it needs a document
+ * and cannot run in a worker -- decoding happens on the main thread either way.
  *
  * `corePath` MUST be the vendored `/ffmpeg-core/ffmpeg-core.js` (copied into
  * `public/` by vite-plugin-static-copy), not the library's own
  * `createFFmpegForEnv`, which hardcodes a unpkg.com corePath that COEP
- * `require-corp` blocks (F7).
+ * `require-corp` blocks.
  */
 export function getFFmpeg(): Promise<FFmpegInstance> {
   if (!ffmpegPromise) {
@@ -49,7 +49,7 @@ export function getFFmpeg(): Promise<FFmpegInstance> {
 }
 
 // ---------------------------------------------------------------------------
-// attrs normalisation
+// attrs normalization
 // ---------------------------------------------------------------------------
 
 // jsfive hands back the same logical attribute as a plain number, a plain array,
@@ -97,8 +97,8 @@ export function parseH5JInfo(attrs: Record<string, unknown>): H5JInfo {
 
   // `Channels` attrs (width/height/frames) are the authoritative nominal size.
   // `image_size` is only a size fallback when those are absent -- it is NOT a
-  // valid voxel-size fallback (F10: image_size is voxel counts, so dividing it
-  // by the voxel counts always yields 1).
+  // valid voxel-size fallback: image_size holds voxel counts despite the name, so
+  // dividing it by the voxel counts always yields 1.
   const imageSize = toNumberArray(attrs.image_size)
   const nominalSize: Vec3 = {
     x: firstNumber(channelsAttrs.width, imageSize[0] ?? 0),
@@ -132,7 +132,7 @@ export function parseH5JInfo(attrs: Record<string, unknown>): H5JInfo {
 export async function openSource(
   src: File | string
 ): Promise<{ file: H5JFile; info: H5JInfo }> {
-  // F12: openH5J checks `src instanceof global.File`; vite.config.ts defines
+  // openH5J checks `src instanceof global.File`; vite.config.ts defines
   // `global` as `globalThis` so a real File instance satisfies that check.
   const file = await openH5J(src)
   const attrs = getH5JAttrs(file) ?? {}
@@ -148,7 +148,7 @@ export async function openSource(
  * back from the decoder. The decoded buffer is padded to a macroblock-aligned
  * width/height (H.265 needs aligned frames) and the nominal `frames` count can
  * simply be wrong, so neither is trusted -- both are re-derived from
- * `decodedVoxelCount`. See notes/implementation-plan.md section 4.
+ * `decodedVoxelCount`.
  */
 export function resolveDims(
   info: H5JInfo,
@@ -167,7 +167,7 @@ export function resolveDims(
   //   1. The file's declared padding -- but only when it actually declares some.
   //      A pad_right/pad_bottom of 0 is indistinguishable from "not recorded", and
   //      admitting it as a candidate would preempt the alignment rule below with a
-  //      claim of "no padding" that the encoder cannot have honoured.
+  //      claim of "no padding" that the encoder cannot have honored.
   //   2. The H.265 macroblock alignment rule: round up to a multiple of 8. This is
   //      what the decoder actually emits; web-vol-viewer relies on it in production.
   //   3. No padding at all, as a last resort in case the alignment is not 8.
@@ -188,8 +188,9 @@ export function resolveDims(
   // 104x160 with 15 frames decodes to 249600 voxels, which 100*156 divides exactly,
   // giving 16 frames and a row stride 4 short. That misreads every row after the
   // first, shearing the volume rather than failing. So consider every candidate that
-  // fits and break the tie with the nominal frame count, which F8 makes a hint rather
-  // than an authority; priority order decides when the hint is absent or unhelpful.
+  // fits and break the tie with the nominal frame count, which is a hint rather than an
+  // authority because `frames` is known to disagree with the decoded data; priority order
+  // decides when the hint is absent or unhelpful.
   const fits = pairs
     .map(([padW, padH]) => ({
       padW,
@@ -256,6 +257,62 @@ export function resolveDims(
 // decodeChannel
 // ---------------------------------------------------------------------------
 
+/**
+ * Names of the files ffmpeg.wasm currently holds in its in-memory filesystem.
+ * Emscripten's `readdir` includes "." and ".."; both are filtered out. A failure
+ * here degrades to an empty list rather than breaking a decode.
+ */
+export function listFfmpegFiles(ffmpeg: FFmpegInstance): string[] {
+  try {
+    return ffmpeg
+      .FS("readdir", "/")
+      .filter((name) => name !== "." && name !== "..")
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Delete every file that has appeared in ffmpeg's filesystem since `before`.
+ *
+ * `@janelia/web-h5j-loader` writes the compressed channel in and reads the decoded
+ * output back out, but unlinks neither (verified in the published `dist/`), and
+ * `getFFmpeg` memoizes ONE instance for the whole session. Without this, each
+ * channel leaves its input and its decoded output resident in the wasm heap for as
+ * long as the tab lives -- ~240 MB per channel for a 1210x566x174 volume at 16-bit,
+ * so roughly a gigabyte after a four-channel MCFO file, on top of the JS-side copies.
+ *
+ * The names are recovered by diffing rather than recomputed, because the loader
+ * derives them from `fileH5J.filename`, an implementation detail we would otherwise
+ * have to mirror exactly and keep in step.
+ *
+ * Safe to call after the decode has returned: emscripten's `readFile` copies into a
+ * fresh array, so the decoded data does not alias the file being removed.
+ */
+export function releaseFfmpegFiles(
+  ffmpeg: FFmpegInstance,
+  before: readonly string[]
+): void {
+  const preexisting = new Set(before)
+  for (const name of listFfmpegFiles(ffmpeg)) {
+    if (preexisting.has(name)) continue
+    try {
+      ffmpeg.FS("unlink", name)
+    } catch {
+      // A file already gone, or one ffmpeg still holds open, is not worth failing
+      // an otherwise successful decode over. The next decode's diff will retry it.
+    }
+  }
+}
+
+/**
+ * The bit depth everything is decoded and stored at. Not a setting: 16-bit carries the
+ * H5J's original 12-bit values through unscaled, and the 8-bit path only ever existed
+ * as a memory escape hatch. The `bits` parameters further down the pipeline stay, since
+ * the zarr and statistics helpers are generic and tested at both widths.
+ */
+export const VOXEL_BITS: BitDepth = 16
+
 /** Decode one channel. Progress ratio 0..1 comes from ffmpeg. */
 export async function decodeChannel(
   file: H5JFile,
@@ -268,51 +325,61 @@ export async function decodeChannel(
     ? ({ ratio }: { ratio: number }) => onProgress(ratio)
     : undefined
 
-  // F11: the 16-bit path returns unscaled 12-bit values (0..4095), not full
-  // 16-bit range -- callers (the ingest worker / shader) must use that range.
-  const data =
-    bits === 16
-      ? await readH5JChannelUint16(channelName, file, progressAdapter, ffmpeg)
-      : await readH5JChannelUint8(channelName, file, progressAdapter, ffmpeg)
+  // Snapshot before decoding so the cleanup below removes only what this decode
+  // created, never anything a concurrent caller may be relying on.
+  const before = listFfmpegFiles(ffmpeg)
 
-  // The library returns null on internal failure instead of throwing.
-  if (!data) {
-    throw new Error(`decodeChannel: failed to decode channel "${channelName}"`)
+  try {
+    // The 16-bit path returns unscaled 12-bit values (0..4095), not full 16-bit
+    // range -- callers (the ingest worker / shader) must use that range.
+    const data =
+      bits === 16
+        ? await readH5JChannelUint16(channelName, file, progressAdapter, ffmpeg)
+        : await readH5JChannelUint8(channelName, file, progressAdapter, ffmpeg)
+
+    // The library returns null on internal failure instead of throwing.
+    if (!data) {
+      throw new Error(
+        `decodeChannel: failed to decode channel "${channelName}"`
+      )
+    }
+    return data
+  } finally {
+    // In a `finally` because a failed decode still leaves the input file, and often
+    // a partial `.raw`, behind -- exactly the case where the heap can least afford it.
+    releaseFfmpegFiles(ffmpeg, before)
   }
-  return data
 }
 
 // ---------------------------------------------------------------------------
 // defaultChannelColors
 // ---------------------------------------------------------------------------
 
-const SPEC_COLORS: Record<string, string> = {
-  r: "#ff0000",
-  g: "#00ff00",
-  b: "#0000ff",
-  c: "#00ffff",
-  m: "#ff00ff",
-  y: "#ffff00",
-  w: "#ffffff",
-  s: "#ffffff", // reference/structural channel
-}
+/**
+ * Default color per channel: Turbo swatches 5, 1, 3 and 7 — spread across the ramp
+ * rather than adjacent on it, so they stay distinguishable when blended additively.
+ *
+ * Not derived from the file's `channel_spec` any more. That mapping sounds right and
+ * reads badly: a Gen1 MCFO stack declares "sssr", which painted three of its four
+ * channels the same white, and a viewer that cannot tell two channels apart is worse
+ * than one that ignores what the file called them.
+ *
+ * Four entries covers every container seen so far. Beyond that the palette cycles, and
+ * two channels share a color -- extend it rather than accept that, if it happens.
+ */
+const DEFAULT_PALETTE = [
+  "#fdae35", // Turbo swatch 5
+  "#4294ff", // Turbo swatch 1
+  "#6dfe62", // Turbo swatch 3
+  "#ac1701", // Turbo swatch 7
+]
 
-// Used whenever channel_spec is missing, too short, or has an unrecognised
-// character at a given index -- cycles if there are more channels than colours.
-const FALLBACK_PALETTE = ["#ff00ff", "#00ff00", "#00ffff", "#ffffff"]
-
-/** Pure: default CSS hex colours per channel, from `channel_spec` when usable. */
-export function defaultChannelColors(
-  channelSpec: string | undefined,
-  count: number
-): string[] {
-  const colors: string[] = []
-  for (let i = 0; i < count; i++) {
-    const specChar = channelSpec?.[i]?.toLowerCase()
-    const specColor = specChar ? SPEC_COLORS[specChar] : undefined
-    colors.push(specColor ?? FALLBACK_PALETTE[i % FALLBACK_PALETTE.length])
-  }
-  return colors
+/** Pure: default CSS hex color per channel, indexed by its position in the container. */
+export function defaultChannelColors(count: number): string[] {
+  return Array.from(
+    { length: count },
+    (_, i) => DEFAULT_PALETTE[i % DEFAULT_PALETTE.length]
+  )
 }
 
 // ---------------------------------------------------------------------------

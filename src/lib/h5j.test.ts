@@ -2,10 +2,13 @@ import { describe, expect, it } from "vitest"
 import type { H5JInfo } from "@/types"
 import {
   defaultChannelColors,
+  listFfmpegFiles,
   parseH5JInfo,
   projectedOutputBytes,
+  releaseFfmpegFiles,
   resolveDims,
 } from "@/lib/h5j"
+import type { FFmpegInstance } from "@janelia/web-h5j-loader"
 
 // getFFmpeg, openSource and decodeChannel all need a browser (ffmpeg.wasm,
 // FileReader/fetch) -- they are exercised at Milestone 3+ against a real
@@ -191,7 +194,7 @@ describe("resolveDims picks the aligned layout when the unpadded one also divide
     expect(dims.size.y).toBe(156)
   })
 
-  it("still honours padding the file declares explicitly", () => {
+  it("still honors padding the file declares explicitly", () => {
     // Declared padding that is NOT the multiple-of-8 rule must still win, so the
     // fix cannot have simply hardcoded alignment.
     const info = makeInfo({
@@ -211,45 +214,35 @@ describe("resolveDims picks the aligned layout when the unpadded one also divide
 })
 
 describe("defaultChannelColors", () => {
-  it("maps recognised channel_spec characters", () => {
-    expect(defaultChannelColors("rgb", 3)).toEqual([
-      "#ff0000",
-      "#00ff00",
-      "#0000ff",
+  it("gives the first four channels four distinguishable colors", () => {
+    expect(defaultChannelColors(4)).toEqual([
+      "#fdae35",
+      "#4294ff",
+      "#6dfe62",
+      "#ac1701",
     ])
   })
 
-  it("falls back to the palette when the spec is shorter than count", () => {
-    const colors = defaultChannelColors("r", 3)
-    expect(colors).toHaveLength(3)
-    expect(colors[0]).toBe("#ff0000")
-    expect(colors[1]).toBe("#00ff00") // FALLBACK_PALETTE[1]
-    expect(colors[2]).toBe("#00ffff") // FALLBACK_PALETTE[2]
-  })
-
-  it("falls back to the palette for unrecognised characters", () => {
-    const colors = defaultChannelColors("rzb", 3)
-    expect(colors[0]).toBe("#ff0000")
-    expect(colors[1]).toBe("#00ff00") // 'z' is unrecognised -> FALLBACK_PALETTE[1]
-    expect(colors[2]).toBe("#0000ff")
-  })
-
-  it("falls back to the palette entirely when spec is undefined", () => {
-    expect(defaultChannelColors(undefined, 4)).toEqual([
-      "#ff00ff",
-      "#00ff00",
-      "#00ffff",
-      "#ffffff",
-    ])
+  it("ignores what the file called its channels", () => {
+    // A Gen1 MCFO stack declares channel_spec "sssr", which used to paint three of its
+    // four channels the same white. Two channels a viewer cannot tell apart is worse
+    // than ignoring the file's own naming.
+    const colors = defaultChannelColors(4)
+    expect(new Set(colors).size).toBe(4)
   })
 
   it("returns an empty array for count 0", () => {
-    expect(defaultChannelColors("rgb", 0)).toEqual([])
+    expect(defaultChannelColors(0)).toEqual([])
   })
 
   it("always returns exactly `count` entries", () => {
-    expect(defaultChannelColors("r", 5)).toHaveLength(5)
-    expect(defaultChannelColors(undefined, 7)).toHaveLength(7)
+    expect(defaultChannelColors(1)).toHaveLength(1)
+    expect(defaultChannelColors(7)).toHaveLength(7)
+  })
+
+  it("cycles beyond the palette, which is the point at which it wants extending", () => {
+    const colors = defaultChannelColors(5)
+    expect(colors[4]).toBe(colors[0])
   })
 })
 
@@ -268,5 +261,94 @@ describe("projectedOutputBytes", () => {
     const bits16 = projectedOutputBytes(size, 1, 16)
     expect(bits16).toBeGreaterThan(bits8)
     expect(bits16).toBe(bits8 * 2)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ffmpeg.wasm filesystem cleanup
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal stand-in for ffmpeg.wasm's emscripten FS bridge. Only `readdir` and
+ * `unlink` are reachable from the code under test; anything else throwing keeps the
+ * fake honest about what is actually used.
+ */
+function fakeFfmpeg(files: string[], options: { unlinkFails?: boolean } = {}) {
+  const present = new Set(files)
+  const unlinked: string[] = []
+  const instance = {
+    FS: (action: string, path: string) => {
+      if (action === "readdir") {
+        // Emscripten really does include these; the code must filter them.
+        return [".", "..", ...present]
+      }
+      if (action === "unlink") {
+        unlinked.push(path)
+        if (options.unlinkFails) throw new Error(`ErrnoError: ${path}`)
+        present.delete(path)
+        return undefined
+      }
+      throw new Error(`unexpected FS action: ${action}`)
+    },
+  } as unknown as FFmpegInstance
+  return { instance, unlinked, remaining: () => [...present] }
+}
+
+describe("listFfmpegFiles", () => {
+  it('drops emscripten\'s "." and ".." entries', () => {
+    const { instance } = fakeFfmpeg([
+      "volume_Channel_0",
+      "volume_Channel_0.raw",
+    ])
+    expect(listFfmpegFiles(instance)).toEqual([
+      "volume_Channel_0",
+      "volume_Channel_0.raw",
+    ])
+  })
+
+  it("degrades to an empty list rather than throwing", () => {
+    const broken = {
+      FS: () => {
+        throw new Error("no filesystem")
+      },
+    } as unknown as FFmpegInstance
+    expect(listFfmpegFiles(broken)).toEqual([])
+  })
+})
+
+describe("releaseFfmpegFiles", () => {
+  it("removes exactly the files a decode added", () => {
+    // The loader writes `<filename>_<channel>` and reads back `<...>.raw`, and
+    // unlinks neither -- at 16-bit the second one is ~240 MB for a real volume.
+    const before = ["preexisting.bin"]
+    const { instance, unlinked, remaining } = fakeFfmpeg([
+      ...before,
+      "volume_Channel_0",
+      "volume_Channel_0.raw",
+    ])
+
+    releaseFfmpegFiles(instance, before)
+
+    expect(unlinked.sort()).toEqual([
+      "volume_Channel_0",
+      "volume_Channel_0.raw",
+    ])
+    expect(remaining()).toEqual(["preexisting.bin"])
+  })
+
+  it("leaves everything alone when the decode added nothing", () => {
+    const before = ["volume_Channel_0", "volume_Channel_0.raw"]
+    const { instance, unlinked } = fakeFfmpeg([...before])
+    releaseFfmpegFiles(instance, before)
+    expect(unlinked).toEqual([])
+  })
+
+  it("does not propagate an unlink failure", () => {
+    // A file ffmpeg still holds open must not fail an otherwise good decode.
+    const { instance, unlinked } = fakeFfmpeg(["leftover.raw"], {
+      unlinkFails: true,
+    })
+    expect(() => releaseFfmpegFiles(instance, [])).not.toThrow()
+    expect(unlinked).toEqual(["leftover.raw"])
   })
 })

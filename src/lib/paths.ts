@@ -1,16 +1,11 @@
 // OPFS layout, mirroring the URL paths the service worker serves so that no
 // translation is needed beyond stripping the leading slash:
 //
-//   zarr/<datasetId>/.zgroup
-//   zarr/<datasetId>/.zattrs
-//   zarr/<datasetId>/<level>/.zarray
-//   zarr/<datasetId>/<level>/index.json    -> LevelIndex
-//   zarr/<datasetId>/<level>/chunks.bin    -> every chunk, packed
-//
-// A level's chunks are packed contiguously in chunk-grid order (z outer, then y,
-// then x), so a chunk's offset is a single multiply. The service worker
-// (public/sw.js) re-derives that offset and the `c<c>.bin` name; it cannot import
-// from here because it is a dependency-free plain script.
+//   zarr/<datasetId>/c<channel>/.zgroup
+//   zarr/<datasetId>/c<channel>/.zattrs
+//   zarr/<datasetId>/c<channel>/<level>/.zarray
+//   zarr/<datasetId>/c<channel>/<level>/index.json    -> LevelIndex
+//   zarr/<datasetId>/c<channel>/<level>/chunks.bin    -> every chunk, packed
 
 export const ZARR_ROOT = "zarr"
 
@@ -19,25 +14,46 @@ export const ZARR_URL_PREFIX = `/${ZARR_ROOT}/`
 
 export const datasetPath = (datasetId: string) => `${ZARR_ROOT}/${datasetId}`
 
-export const levelPath = (datasetId: string, level: number) =>
-  `${datasetPath(datasetId)}/${level}`
+/**
+ * One OME-Zarr group per channel, each a plain three-dimensional volume.
+ *
+ * A single array spanning the channel axis would be fewer files, and was the layout until
+ * it proved incompatible with showing one channel while another converts: a chunk holding
+ * every channel is only correct once the last of them has been written, and Neuroglancer
+ * caches what it has already fetched. Per channel, a chunk is complete the moment it is
+ * written, and a channel's chunks are only ever fetched by that channel's own layer.
+ */
+export const channelPath = (datasetId: string, channel: number) =>
+  `${datasetPath(datasetId)}/c${channel}`
 
-export const zgroupPath = (datasetId: string) =>
-  `${datasetPath(datasetId)}/.zgroup`
+export const levelPath = (
+  datasetId: string,
+  channel: number,
+  level: number
+) => `${channelPath(datasetId, channel)}/${level}`
 
-export const zattrsPath = (datasetId: string) =>
-  `${datasetPath(datasetId)}/.zattrs`
+export const zgroupPath = (datasetId: string, channel: number) =>
+  `${channelPath(datasetId, channel)}/.zgroup`
 
-export const zarrayPath = (datasetId: string, level: number) =>
-  `${levelPath(datasetId, level)}/.zarray`
+export const zattrsPath = (datasetId: string, channel: number) =>
+  `${channelPath(datasetId, channel)}/.zattrs`
 
-export const levelIndexPath = (datasetId: string, level: number) =>
-  `${levelPath(datasetId, level)}/index.json`
+export const zarrayPath = (datasetId: string, channel: number, level: number) =>
+  `${levelPath(datasetId, channel, level)}/.zarray`
+
+export const levelIndexPath = (
+  datasetId: string,
+  channel: number,
+  level: number
+) => `${levelPath(datasetId, channel, level)}/index.json`
 
 /**
- * Packed chunk file for one level, holding every channel. Channels share the file
- * because a chunk spans the whole channel axis (Neuroglancer requires it), and each
- * channel occupies a contiguous sub-block inside each chunk.
+ * Every chunk of one level of one channel, packed contiguously in chunk-grid order
+ * (z outer, then y, then x). A chunk's offset is therefore a single multiply, which the
+ * service worker recomputes; it cannot import from here, being dependency-free plain JS.
  */
-export const chunksFilePath = (datasetId: string, level: number) =>
-  `${levelPath(datasetId, level)}/chunks.bin`
+export const chunksFilePath = (
+  datasetId: string,
+  channel: number,
+  level: number
+) => `${levelPath(datasetId, channel, level)}/chunks.bin`

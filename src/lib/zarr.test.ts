@@ -71,15 +71,14 @@ describe("bit-depth helpers", () => {
     expect(zarrDtype(16)).toBe("<u2")
   })
 
-  it("maxValue is 4095 for 16-bit, NOT 65535 (F11: unscaled 12-bit data)", () => {
+  it("maxValue is 4095 for 16-bit, not 65535: the data is unscaled 12-bit", () => {
     expect(maxValue(16)).toBe(4095)
     expect(maxValue(8)).toBe(255)
   })
 
-  it("chunkBytes spans every channel", () => {
-    expect(chunkBytes(8, 1)).toBe(64 * 64 * 64)
-    expect(chunkBytes(16, 1)).toBe(64 * 64 * 64 * 2)
-    expect(chunkBytes(16, 2)).toBe(64 * 64 * 64 * 2 * 2)
+  it("chunkBytes covers one chunk of one channel", () => {
+    expect(chunkBytes(8)).toBe(64 * 64 * 64)
+    expect(chunkBytes(16)).toBe(64 * 64 * 64 * 2)
   })
 })
 
@@ -230,82 +229,76 @@ describe("downsample2x", () => {
 })
 
 describe("buildZarray", () => {
-  it("shape and dtype for 8-bit", () => {
-    const z = buildZarray({ x: 10, y: 20, z: 30 }, 3, 8) as {
+  it("is three-dimensional: one array per channel, so there is no channel axis", () => {
+    const z = buildZarray({ x: 10, y: 20, z: 30 }, 8) as {
       shape: number[]
       dtype: string
       chunks: number[]
     }
-    expect(z.shape).toEqual([3, 30, 20, 10])
+    expect(z.shape).toEqual([30, 20, 10])
     expect(z.dtype).toBe("|u1")
-    expect(z.chunks).toEqual([3, 64, 64, 64])
+    expect(z.chunks).toEqual([64, 64, 64])
   })
 
-  it("shape and dtype for 16-bit", () => {
-    const z = buildZarray({ x: 10, y: 20, z: 30 }, 2, 16) as {
-      shape: number[]
-      dtype: string
-    }
-    expect(z.shape).toEqual([2, 30, 20, 10])
+  it("uses the 16-bit dtype for 16-bit data", () => {
+    const z = buildZarray({ x: 10, y: 20, z: 30 }, 16) as { dtype: string }
     expect(z.dtype).toBe("<u2")
   })
 
-  it.each([1, 2, 4])(
-    "chunks[0] === shape[0] for %i channel(s) -- Neuroglancer requires a channel " +
-      "axis to map with stride 1 to a single chunk, or it refuses to build a render layer",
-    (channelCount) => {
-      const z = buildZarray({ x: 10, y: 20, z: 30 }, channelCount, 8) as {
-        shape: number[]
-        chunks: number[]
-      }
-      expect(z.chunks[0]).toBe(z.shape[0])
-      expect(z.shape[0]).toBe(channelCount)
-    }
-  )
+  it("has a chunk size that does not depend on the container", () => {
+    // The previous layout packed every channel into one chunk, so an eight-channel file
+    // would have had 4 MB chunks. Now a chunk is one channel's, always.
+    expect(chunkBytes(16)).toBe(64 * 64 * 64 * 2)
+    expect(chunkBytes(8)).toBe(64 * 64 * 64)
+  })
 })
 
 describe("buildZattrs", () => {
-  it("scale factors per level and channel metadata", () => {
+  it("describes one channel's own multiscale volume", () => {
     const levels = pyramid({ x: 256, y: 128, z: 64 })
     const attrs = buildZattrs({
-      datasetName: "test",
+      name: "Channel_1",
       levels,
       voxelSize: { x: 0.5, y: 0.5, z: 1 },
-      channelNames: ["red", "green"],
-      channelColors: ["#ff0000", "#00ff00"],
+      color: "#00ff00",
       bits: 16,
     }) as {
       multiscales: Array<{
+        name: string
+        axes: Array<{ name: string }>
         datasets: Array<{
           path: string
           coordinateTransformations: Array<{ scale: number[] }>
         }>
       }>
       omero: {
-        channels: Array<{
-          label: string
-          color: string
-          window: { max: number }
-        }>
+        channels: Array<{ label: string; color: string; window: { max: number } }>
       }
     }
+
+    // Three axes, no channel axis: that is the whole point of the layout.
+    expect(attrs.multiscales[0].axes.map((a) => a.name)).toEqual(["z", "y", "x"])
+    expect(attrs.multiscales[0].name).toBe("Channel_1")
 
     const datasets = attrs.multiscales[0].datasets
     expect(datasets.length).toBe(levels.length)
     datasets.forEach((ds, i) => {
       expect(ds.path).toBe(String(i))
+      // Scale per level, in the same three axes and the same order.
       expect(ds.coordinateTransformations[0].scale).toEqual([
-        1,
         1 * levels[i].factor,
         0.5 * levels[i].factor,
         0.5 * levels[i].factor,
       ])
     })
 
-    expect(attrs.omero.channels.length).toBe(2)
-    expect(attrs.omero.channels[0].label).toBe("red")
-    // color must not carry the leading '#' (omero convention)
-    expect(attrs.omero.channels[0].color).toBe("ff0000")
+    expect(attrs.omero.channels).toHaveLength(1)
+    // omero wants six hex digits with no leading hash.
+    expect(attrs.omero.channels[0]).toMatchObject({
+      label: "Channel_1",
+      color: "00ff00",
+    })
+    // The 16-bit path carries unscaled 12-bit values, so the window tops out at 4095.
     expect(attrs.omero.channels[0].window.max).toBe(4095)
   })
 })

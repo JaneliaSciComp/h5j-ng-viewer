@@ -56,34 +56,94 @@ body {
   min-height: 0;
 }
 
+/* The whole user interface: one row, sized to its content, above Neuroglancer. Every
+ * piece is fixed-width except the file name, which is what absorbs a narrow window. */
 .topbar {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 8px 14px;
+  gap: 10px;
+  height: 32px;
+  padding: 0 10px;
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
+  font-size: 12px;
 }
 
-.topbar h1 {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
+/* The file name, elided in the middle. The head is the only thing in the bar allowed to
+ * shrink, so it is what absorbs a narrow window; the tail never does. Capped at half the
+ * bar so a long name cannot crowd out the controls, which are what the user came for. */
+.bar-source {
+  flex: 0 1 auto;
+  display: flex;
+  min-width: 0;
+  max-width: 50%;
+  color: var(--text-dim);
+}
+
+.bar-source-head {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.topbar-dataset {
+/* flex-shrink 0 is the whole trick: the head runs out of room and ellipsizes while this
+   stays intact, which is middle-elision without measuring any text. */
+.bar-source-tail {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+/* A checkbox that reads as one control with its label, and does not shrink -- the file
+ * name is the only thing in the bar allowed to give up width. */
+.bar-toggle {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
   color: var(--text-dim);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.bar-toggle input {
+  margin: 0;
+  cursor: pointer;
+}
+
+.bar-toggle:has(input:disabled) {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.bar-progress {
+  flex: 0 1 auto;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Warnings and errors take the progress slot: they are mutually exclusive with it in
+   practice, and neither deserves permanent width in a 32px bar. */
+.bar-alert {
+  flex: 0 0 auto;
+  max-width: 40ch;
+  padding: 2px 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--warn);
+  font: inherit;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 28ch;
+  cursor: pointer;
 }
 
-.topbar .primary {
-  margin-left: auto;
-  flex: 0 0 auto;
+.bar-alert:hover {
+  text-decoration: underline;
 }
 
 .viewer-area {
@@ -155,11 +215,6 @@ body {
   flex-direction: column;
   gap: 16px;
 }
-
-.primary {
-  border-color: var(--accent);
-}
-
 a,
 button,
 input,
@@ -213,197 +268,405 @@ legend {
 }
 
 /* SourcePicker */
-.source-picker {
+/* Channel chips.
+ *
+ * Three independent visual channels carry five states: the outline says whether the
+ * channel is loaded, the fill says whether it is shown, and a ring outside the chip says
+ * it is the one being edited. The ring is outside so it stacks onto hollow and filled
+ * alike -- "loaded, hidden, and being edited" is reachable by picking a channel then
+ * hiding it, and moving the edit target on the user's behalf would be worse.
+ *
+ * Color is never the only carrier: fill-versus-hollow and dashed-versus-solid are shape
+ * cues too. The conversion ring advances with the data rather than animating, so there is
+ * no motion for prefers-reduced-motion to suppress.
+ */
+.channel-chips {
   display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.field-row {
-  flex-direction: row;
   align-items: center;
-  flex-wrap: wrap;
-}
-
-.field-row input[type="text"] {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-/* ChannelList */
-.channel-list ul {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
   gap: 4px;
+  flex: 0 0 auto;
 }
 
-.channel-list li {
+.channel-chip {
+  position: relative;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1.5px solid var(--chip-color, var(--border));
+  background: transparent;
+  color: var(--chip-color, var(--text-dim));
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  cursor: pointer;
+}
+
+/* Not loaded: dashed and dimmed, and inert. */
+.channel-chip[data-state="queued"],
+.channel-chip[data-state="converting"] {
+  border-style: dashed;
+  border-color: var(--border);
+  color: var(--text-dim);
+  cursor: default;
+}
+
+/* Converting: the same chip, with a ring showing how far along it is. */
+.channel-chip[data-state="converting"]::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  background: conic-gradient(
+    var(--chip-color, var(--text-dim)) var(--chip-progress, 0%),
+    transparent 0
+  );
+  mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0);
+  -webkit-mask: radial-gradient(
+    farthest-side,
+    transparent calc(100% - 2px),
+    #000 0
+  );
+}
+
+/* Shown: filled with the channel's own rendering color. */
+.channel-chip[data-state="visible"] {
+  background: var(--chip-color, var(--border));
+  color: #000;
+}
+
+/* Being edited, whether shown or hidden. */
+.channel-chip[data-picked="true"] {
+  box-shadow:
+    0 0 0 2px var(--bg-panel),
+    0 0 0 3.5px var(--text);
+}
+
+.channel-chip:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 3px;
+}
+
+/* Eye and swatch: one set of controls, acting on the channel being edited, so the bar's
+ * width does not grow with the channel count. */
+.channel-controls {
   display: flex;
   align-items: center;
   gap: 6px;
+  flex: 0 0 auto;
 }
 
-.channel-content-type {
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.icon-button:hover:not(:disabled) {
+  border-color: var(--border);
+}
+
+.icon-button:disabled,
+.swatch-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.swatch-button {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1.5px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  anchor-name: --swatch;
+}
+
+/* Color and opacity popover.
+ *
+ * `popover` puts this in the top layer, which brings light dismiss and Esc for free but
+ * also means it is positioned against the viewport rather than an ancestor. Anchor
+ * positioning ties it to the swatch where the browser supports it; the fallback pins it
+ * under the right-hand end of the bar, which is where the swatch sits anyway.
+ */
+.channel-popover {
+  position: fixed;
+  top: 38px;
+  right: 12px;
+  left: auto;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  color: var(--text);
+  font-size: 12px;
+}
+
+@supports (anchor-name: --swatch) {
+  .channel-popover {
+    position-anchor: --swatch;
+    top: anchor(bottom);
+    right: anchor(right);
+    margin-top: 6px;
+  }
+}
+
+.popover-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.popover-title {
+  flex: 1 1 auto;
   color: var(--text-dim);
 }
 
-.channel-swatch {
-  display: inline-block;
-  width: 12px;
-  height: 12px;
-  border-radius: 2px;
-  border: 1px solid var(--border);
-  margin-left: auto;
+.popover-close {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
 }
 
-.bit-depth-toggle {
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+.popover-close:hover {
+  background: var(--border);
+  color: var(--text);
 }
 
-.radio-option {
+.popover-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  padding: 3px 0;
 }
 
-/* IngestProgress */
+.popover-label {
+  width: 52px;
+  color: var(--text-dim);
+}
+
+.swatch-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 16px);
+  gap: 4px;
+}
+
+.swatch-choice {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.swatch-choice[aria-pressed="true"] {
+  box-shadow:
+    0 0 0 2px var(--bg-panel),
+    0 0 0 3px var(--text);
+}
+
+/* Inline color picker. The square is two gradients over a pure hue -- white fading out
+   to the right for saturation, black fading out upwards for value -- which is how every
+   picker is built, and lets the browser do the interpolation. */
+.color-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.color-square {
+  position: relative;
+  width: 100%;
+  height: 96px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background:
+    linear-gradient(to top, #000, transparent),
+    linear-gradient(to right, #fff, transparent),
+    hsl(var(--field-hue, 0) 100% 50%);
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.color-thumb {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+
+.hue-slider {
+  width: 100%;
+  background: linear-gradient(
+    to right,
+    #f00 0%,
+    #ff0 17%,
+    #0f0 33%,
+    #0ff 50%,
+    #00f 67%,
+    #f0f 83%,
+    #f00 100%
+  );
+  border-radius: 3px;
+  appearance: none;
+  height: 10px;
+}
+
+.hue-slider::-webkit-slider-thumb,
+.rgb-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 10px;
+  height: 16px;
+  border: 2px solid #fff;
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+  background: transparent;
+  cursor: pointer;
+}
+
+.rgb-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rgb-label {
+  width: 10px;
+  color: var(--text-dim);
+}
+
+.rgb-slider {
+  flex: 1 1 auto;
+  height: 10px;
+  border-radius: 3px;
+  appearance: none;
+}
+
+.rgb-value {
+  width: 26px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+
+.hex-input {
+  width: 100%;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.bar-opacity {
+  width: 96px;
+  accent-color: var(--chip-color, var(--text));
+}
+
+.bar-opacity:disabled {
+  opacity: 0.4;
+}
+
+.bar-opacity-value {
+  width: 34px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+
+/* Narrower than the opacity slider: it has five stops, not a continuum, so travel past
+ * what the steps need would only invite dragging between them. */
+.bar-samples {
+  flex: 0 0 auto;
+  width: 64px;
+  accent-color: var(--text);
+}
+
+.bar-samples:disabled {
+  opacity: 0.4;
+}
+
+.bar-samples-value {
+  flex: 0 0 auto;
+  width: 26px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
 .ingest-compact {
   flex: 1 1 auto;
   flex-direction: row;
   align-items: center;
   gap: 10px;
   min-width: 0;
-}
-
-.ingest-compact .ingest-label {
-  color: var(--text-dim);
-  white-space: nowrap;
-}
-
-.ingest-compact progress {
-  flex: 0 1 160px;
-  min-width: 60px;
-}
-
-/* Warnings open over the viewer instead of reflowing the bar. */
+} /* Warnings open over the viewer instead of reflowing the bar. */
 .ingest-warnings-details,
 .ingest-details-popover {
   position: relative;
   flex: 0 0 auto;
 }
-
-.ingest-details-popover > summary {
-  cursor: pointer;
-  color: var(--text-dim);
-  white-space: nowrap;
+.settings-section {
+  margin-bottom: 14px;
 }
 
-.ingest-details-popover[open] > ul {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  z-index: 10;
-  width: max-content;
-  max-width: 60ch;
-  margin: 0;
-  padding: 10px 10px 10px 26px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  box-shadow: 0 4px 16px rgb(0 0 0 / 0.4);
-  white-space: normal;
-}
-
-.topbar-geometry {
-  color: var(--text-dim);
-  white-space: nowrap;
-}
-
-.ingest-warnings-details > summary {
-  cursor: pointer;
-  color: var(--warn);
-  white-space: nowrap;
-}
-
-.ingest-warnings-details[open] > ul {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  z-index: 10;
-  width: max-content;
-  max-width: 60ch;
-  padding: 10px 10px 10px 26px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  box-shadow: 0 4px 16px rgb(0 0 0 / 0.4);
-  white-space: normal;
-}
-
-.ingest-compact .ingest-detail,
-.ingest-compact .ingest-error {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
-}
-
-.ingest-progress {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.ingest-status label {
-  display: block;
-  margin-bottom: 4px;
-}
-
-.ingest-status progress {
-  width: 100%;
-}
-
-.ingest-detail {
-  margin: 4px 0 0;
-  color: var(--text-dim);
-}
-
-.ingest-warnings {
-  margin: 0;
-  padding-left: 18px;
-  color: var(--warn);
-}
-
-.ingest-error {
-  margin: 0;
-  color: var(--error);
+.settings-section h3 {
+  margin: 0 0 6px;
+  font-size: 12px;
   font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
-/* StorageStatus */
-.storage-status {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+.settings-source {
+  overflow-wrap: anywhere;
+  color: var(--text-dim);
+  font-size: 12px;
 }
 
+.settings-warnings,
+.settings-diagnostics {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+}
+
+.settings-warnings {
+  color: var(--warn);
+}
+
+.settings-diagnostics {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
 .storage-warning {
   color: var(--warn);
   font-weight: 600;
