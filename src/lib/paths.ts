@@ -9,10 +9,35 @@
 
 export const ZARR_ROOT = "zarr"
 
+/**
+ * The on-disk format's version, folded into every dataset id.
+ *
+ * This is what makes a format change safe. Chunk layout, pyramid factors and the
+ * channel-per-array split are all baked into the bytes on disk, and a build that reads
+ * them differently must not reuse a tree written by a build that wrote them the other
+ * way. Bumping this changes every id, so old trees are simply never looked up again --
+ * they age out through eviction instead of being mounted and misread.
+ *
+ * Bump it whenever anything under a dataset directory changes shape.
+ */
+export const LAYOUT_VERSION = 2
+
 /** URL prefix the service worker intercepts. Keep in sync with public/sw.js. */
 export const ZARR_URL_PREFIX = `/${ZARR_ROOT}/`
 
 export const datasetPath = (datasetId: string) => `${ZARR_ROOT}/${datasetId}`
+
+/**
+ * Per-dataset bookkeeping: when it was last opened, how big it is, and whether its
+ * conversion ever finished. Written last, so its presence is the definition of
+ * "complete" -- a tree without it is debris from a run that died partway.
+ *
+ * Deliberately NOT under `c<channel>/`: it describes the dataset, and Neuroglancer must
+ * never see it. It sits beside the channel directories, where nothing resolving a zarr
+ * array will look.
+ */
+export const datasetMarkerPath = (datasetId: string) =>
+  `${datasetPath(datasetId)}/dataset.json`
 
 /**
  * One OME-Zarr group per channel, each a plain three-dimensional volume.
@@ -26,11 +51,8 @@ export const datasetPath = (datasetId: string) => `${ZARR_ROOT}/${datasetId}`
 export const channelPath = (datasetId: string, channel: number) =>
   `${datasetPath(datasetId)}/c${channel}`
 
-export const levelPath = (
-  datasetId: string,
-  channel: number,
-  level: number
-) => `${channelPath(datasetId, channel)}/${level}`
+export const levelPath = (datasetId: string, channel: number, level: number) =>
+  `${channelPath(datasetId, channel)}/${level}`
 
 export const zgroupPath = (datasetId: string, channel: number) =>
   `${channelPath(datasetId, channel)}/.zgroup`

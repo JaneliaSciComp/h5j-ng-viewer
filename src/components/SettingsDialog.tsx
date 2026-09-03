@@ -1,6 +1,12 @@
 import { useState } from "react"
 import type { ReactElement } from "react"
 import { Dialog } from "@/components/Dialog"
+import { formatBytes } from "@/lib/bytes"
+import {
+  EVICTION_PERCENT_MAX,
+  EVICTION_PERCENT_MIN,
+  storageBudget,
+} from "@/lib/prefs"
 
 /**
  * Settings and stored data, behind the gear.
@@ -26,8 +32,13 @@ export function SettingsDialog(props: {
   /** Per-channel measurements and the post-ingest probe, one line each. */
   diagnostics: string[]
   warnings: string[]
+  /** The conversion failure, if there was one. Null when nothing has gone wrong. */
+  error: string | null
   onClearAll: () => void
   clearing: boolean
+  /** How full storage may get before old volumes are discarded, 5..100. */
+  evictionPercent: number
+  onEvictionPercentChange: (percent: number) => void
 }): ReactElement {
   // Deleting every converted volume can discard hours of work, so it takes two clicks.
   // A second dialog on top of this one would be worse than a button that changes its
@@ -46,6 +57,20 @@ export function SettingsDialog(props: {
         props.onClose()
       }}
     >
+      {/* First, and in its own section. The top bar's alert opens this dialog, and
+          before this existed the error it was reporting appeared nowhere in here --
+          only the warnings, which are routine. Full text, wrapped and selectable: the
+          bar has to ellipsize it, and the part that names the fault is often the part
+          that gets cut. */}
+      {props.error ? (
+        <section className="settings-section">
+          <h3>Error</h3>
+          <p className="settings-error" role="alert">
+            {props.error}
+          </p>
+        </section>
+      ) : null}
+
       {props.sourceName ? (
         <section className="settings-section">
           <h3>Source</h3>
@@ -78,6 +103,38 @@ export function SettingsDialog(props: {
             {overQuota ? " — more than the space left" : ""}
           </p>
         ) : null}
+        {/* A ceiling on how much of the browser's quota this app will occupy. Below
+            100 by default: the quota is a share of one disk that every other site is
+            drawing on too, and filling all of it is antisocial even where the browser
+            permits it. Low values are also the quickest way to exercise eviction
+            deliberately rather than waiting for a disk to fill. */}
+        <p className="settings-field">
+          <label htmlFor="eviction-percent">Use up to</label>
+          <input
+            id="eviction-percent"
+            type="number"
+            min={EVICTION_PERCENT_MIN}
+            max={EVICTION_PERCENT_MAX}
+            step={5}
+            value={props.evictionPercent}
+            onChange={(event) =>
+              props.onEvictionPercentChange(Number(event.target.value))
+            }
+            title="Discard the least recently used volumes once storage passes this share of the browser's quota"
+          />
+          {/* The unit belongs to the number, so it must not be able to wrap away from
+              it -- "Use up to 80" on one line and "% of the quota" on the next reads as
+              two thoughts. The sentence that follows is a separate thought and gets its
+              own line. */}
+          <span className="settings-field-unit">
+            % of the quota (
+            {formatBytes(storageBudget(props.quota, props.evictionPercent))}).
+          </span>
+        </p>
+        <p className="settings-note">
+          Past this, the least recently used volumes are discarded.
+        </p>
+
         <button
           type="button"
           onClick={() => {
@@ -125,15 +182,4 @@ export function SettingsDialog(props: {
       ) : null}
     </Dialog>
   )
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes <= 0) return "0 B"
-  const units = ["B", "KB", "MB", "GB", "TB"]
-  const exp = Math.min(
-    Math.floor(Math.log(bytes) / Math.log(1024)),
-    units.length - 1
-  )
-  const value = bytes / 1024 ** exp
-  return `${exp === 0 ? value : value.toFixed(1)} ${units[exp]}`
 }

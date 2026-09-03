@@ -14,6 +14,7 @@ import type { Phase } from "@/state/actions"
 
 const PHASE_LABELS: Record<Phase, string> = {
   idle: "",
+  evicting: "Reclaiming space",
   fetching: "Loading file",
   decoding: "Decoding",
   chunking: "Chunking",
@@ -26,6 +27,12 @@ export function ProgressText(props: {
   phase: Phase
   /** 0..1, or null when the phase has no meaningful fraction. */
   fraction: number | null
+  /**
+   * What the phase is working on, e.g. "Level 2 of 4" or "3 volumes, 4.1 GB". The
+   * reducer has always recorded this and nothing rendered it, so the two phases that
+   * take longest were the two that said least about what they were doing.
+   */
+  detail?: string
   warnings: string[]
   error: string | null
   /** Opens the place where the full text lives. */
@@ -52,6 +59,7 @@ export function ProgressText(props: {
     return (
       <span className="bar-progress" aria-live="polite">
         {PHASE_LABELS[props.phase]}
+        {props.detail ? ` — ${props.detail}` : ""}
         {percent}
       </span>
     )

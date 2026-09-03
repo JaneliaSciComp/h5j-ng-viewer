@@ -8,7 +8,7 @@
 // The service worker (public/sw.js) reads this data too, but it is dependency-free
 // plain JS and re-derives paths itself; it does not import from here.
 
-import { ZARR_ROOT } from "@/lib/paths"
+import { datasetPath, ZARR_ROOT } from "@/lib/paths"
 
 // This project's tsconfig.json lib list includes "WebWorker" alongside "DOM", which
 // is what pulls in FileSystemSyncAccessHandle / FileSystemFileHandle.createSyncAccessHandle
@@ -54,14 +54,37 @@ export async function resolveDir(
   return dir
 }
 
+/**
+ * Rethrow an OPFS failure with the name of the fault and the file it happened to.
+ *
+ * Worth doing because of what the browser gives us on its own: "Failed to execute
+ * 'createWritable' on 'FileSystemFileHandle'" is true of every write this app makes, so
+ * on its own it says only that a write failed. The DOMException *name* is the part that
+ * says what to do -- QuotaExceededError means the disk is full and the fix is to clear
+ * data, NoModificationAllowedError means something else still holds the file open, and
+ * NotAllowedError means permission. All three are indistinguishable from the message.
+ */
+function opfsFailure(err: unknown, action: string, path: string): Error {
+  if (err instanceof DOMException) {
+    return new Error(`${err.name}: ${action} ${path} — ${err.message}`)
+  }
+  return err instanceof Error
+    ? err
+    : new Error(`${action} ${path}: ${String(err)}`)
+}
+
 export async function writeJson(path: string, value: unknown): Promise<void> {
   const { dir, name } = splitPath(path)
   const dirHandle = await resolveDir(dir, true)
   if (!dirHandle) throw new Error(`cannot resolve directory for ${path}`)
-  const fileHandle = await dirHandle.getFileHandle(name, { create: true })
-  const writable = await fileHandle.createWritable()
-  await writable.write(JSON.stringify(value))
-  await writable.close()
+  try {
+    const fileHandle = await dirHandle.getFileHandle(name, { create: true })
+    const writable = await fileHandle.createWritable()
+    await writable.write(JSON.stringify(value))
+    await writable.close()
+  } catch (err) {
+    throw opfsFailure(err, "writing", path)
+  }
 }
 
 export async function readJson<T>(path: string): Promise<T | null> {
@@ -147,7 +170,11 @@ export async function openPackedWriter(path: string): Promise<PackedWriter> {
   // optional), so TS would narrow the false branch of an `in` check to `never` and
   // reject the main-thread fallback below as dead code.
   if (typeof fileHandle.createSyncAccessHandle === "function") {
-    const handle = await fileHandle.createSyncAccessHandle()
+    const handle = await fileHandle
+      .createSyncAccessHandle()
+      .catch((err: unknown) => {
+        throw opfsFailure(err, "opening", path)
+      })
     let bytesWritten = 0
     let target = 0
     return {
@@ -183,7 +210,9 @@ export async function openPackedWriter(path: string): Promise<PackedWriter> {
   // queued here, once inside the stream) until close() resolves. That is fine
   // for the tiny JSON-adjacent writes the main thread does; the ingest worker
   // never takes this path.
-  const writable = await fileHandle.createWritable()
+  const writable = await fileHandle.createWritable().catch((err: unknown) => {
+    throw opfsFailure(err, "opening", path)
+  })
   const queue: Array<{ bytes: Uint8Array<ArrayBuffer>; at: number }> = []
   let bytesWritten = 0
   let target = 0
@@ -237,6 +266,38 @@ export async function removeDataset(datasetId: string): Promise<void> {
   } catch (err) {
     if (!isNotFound(err)) throw err
   }
+}
+
+/**
+ * Total bytes a dataset occupies, by walking it.
+ *
+ * Used when the marker does not record a size -- a dataset written before markers
+ * existed, or one whose conversion died before writing one. Costs one handle per file,
+ * which for a five-level pyramid over a few channels is dozens, not thousands.
+ */
+export async function datasetSize(datasetId: string): Promise<number> {
+  const dir = await resolveDir(datasetPath(datasetId), false)
+  return dir ? sumDirectory(dir) : 0
+}
+
+async function sumDirectory(dir: FileSystemDirectoryHandle): Promise<number> {
+  let total = 0
+  for await (const handle of (
+    dir as unknown as {
+      values(): AsyncIterable<FileSystemDirectoryHandle | FileSystemFileHandle>
+    }
+  ).values()) {
+    try {
+      if (handle.kind === "directory") {
+        total += await sumDirectory(handle as FileSystemDirectoryHandle)
+      } else {
+        total += (await (handle as FileSystemFileHandle).getFile()).size
+      }
+    } catch {
+      // A file removed while we walk is one we do not have to count.
+    }
+  }
+  return total
 }
 
 /** Dataset ids currently in OPFS. */

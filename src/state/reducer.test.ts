@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { initialState, reducer } from "@/state/reducer"
+import { isBusy } from "@/state/selectors"
 import type { AppState } from "@/state/reducer"
 import {
   cameraMoved,
@@ -336,5 +337,25 @@ describe("the 3D projection toggle", () => {
     expect(toggled.controls.visible).toEqual(edited.controls.visible)
     expect(toggled.controls.colors).toEqual(edited.controls.colors)
     expect(toggled.controls.opacity).toEqual(edited.controls.opacity)
+  })
+})
+
+describe("the evicting phase", () => {
+  it("is busy, so the bar shows it rather than looking idle", () => {
+    // The gap this closes: eviction can run for minutes, and with no phase of its own
+    // the bar sat on the previous label while the app appeared to have stalled.
+    const state = run([ingestPhase("evicting", "3 volumes, 4.1 GB")])
+    expect(isBusy(state)).toBe(true)
+    expect(state.ingest.phase).toBe("evicting")
+  })
+
+  it("carries a detail string for the bar to show beside the label", () => {
+    const state = run([ingestPhase("evicting", "3 volumes, 4.1 GB · 2/3")])
+    expect(state.ingest.detail).toBe("3 volumes, 4.1 GB · 2/3")
+  })
+
+  it("takes a fraction, so progress is visible per volume removed", () => {
+    const state = run([ingestPhase("evicting"), ingestProgress(2 / 3)])
+    expect(state.ingest.fraction).toBeCloseTo(2 / 3)
   })
 })
