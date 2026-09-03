@@ -10,7 +10,12 @@
 // worker-only. So decoding happens here and chunking happens in ingest.worker.ts, with
 // the decoded buffer transferred rather than copied.
 
-import { decodeChannel, resolveDims, VOXEL_BITS } from "@/lib/h5j"
+import {
+  decodeChannel,
+  projectedOutputBytes,
+  resolveDims,
+  VOXEL_BITS,
+} from "@/lib/h5j"
 import { buildViewerState } from "@/lib/ngstate"
 import {
   buildZarray,
@@ -19,7 +24,13 @@ import {
   chunkBytes,
   pyramid,
 } from "@/lib/zarr"
-import { writeJson } from "@/lib/opfs"
+import { formatBytes } from "@/lib/bytes"
+import { evictDatasets, listDatasetRecords, markComplete } from "@/lib/datasets"
+import type { DatasetMarker } from "@/lib/datasets"
+import { applyPlan, planEviction } from "@/lib/evict"
+import { removeDataset, storageEstimate, writeJson } from "@/lib/opfs"
+import { LAYOUT_VERSION } from "@/lib/paths"
+import { storageBudget } from "@/lib/prefs"
 import { levelIndexPath, zarrayPath, zattrsPath, zgroupPath } from "@/lib/paths"
 import { describeProbe, probeDataset } from "@/lib/verify"
 import {
@@ -36,7 +47,7 @@ import {
   ingestWarnings,
   viewerReady,
 } from "@/state/actions"
-import type { Dispatch } from "@/state/actions"
+import type { Action, Dispatch } from "@/state/actions"
 import type { ChannelStats } from "@/lib/stats"
 import type {
   ChannelControls,
@@ -62,8 +73,18 @@ export interface IngestParams {
   controls: ChannelControls
   /** Origin the service worker serves the dataset from, i.e. `location.origin`. */
   origin: string
+  /** How full storage may get before old volumes are evicted to make room. */
+  evictionPercent: number
   /** Color, position and zoom overrides from the address bar. */
   launch: LaunchParams
+  /** Where this file came from, recorded with the dataset. Null for a dropped file. */
+  sourceUrl: string | null
+  /**
+   * The dataset the viewer is currently mounted on, if any. Never evicted: its chunks
+   * are being served to Neuroglancer right now, and removing it under a live layer
+   * turns a working view black with no error anywhere.
+   */
+  mountedDatasetId: string | null
 }
 
 /**
@@ -84,14 +105,41 @@ export async function ingestH5J(
   dispatch: Dispatch
 ): Promise<void> {
   const { file, info, sourceName, controls, origin, launch } = params
+  const { sourceUrl, mountedDatasetId, evictionPercent } = params
   const names = info.channels.map((channel) => channel.name)
   if (names.length === 0) return
 
-  const datasetId = makeDatasetId(sourceName)
+  // The full URL, not the basename the bar shows: the basename has had its path
+  // stripped, so two folders holding a file of the same name would produce one key.
+  const datasetId = makeDatasetId(sourceName, sourceUrl ?? sourceName)
   const datasetName = sourceName || datasetId
   const order = conversionOrder(controls.visible, names.length)
 
   dispatch(ingestStarted(names.length))
+
+  // Checked before a byte is written, because the alternative is discovering it halfway
+  // through: the write fails, and what has been written so far is an unreadable tree
+  // that has to be cleaned up. Advisory rather than exact -- the browser's quota is a
+  // fraction of FREE disk and shrinks as the disk fills, so it can still be exceeded
+  // partway through a conversion that fitted when it started. Catching the clear cases
+  // is worth it even so.
+  const projected = projectedOutputBytes(
+    info.nominalSize,
+    names.length,
+    VOXEL_BITS
+  )
+  const shortfall = await makeRoom({
+    needed: projected,
+    keep: [datasetId, mountedDatasetId].filter(
+      (id): id is string => id !== null
+    ),
+    evictionPercent,
+    dispatch,
+  })
+  if (shortfall) {
+    dispatch(ingestFailed(shortfall))
+    return
+  }
 
   // Resolved once, from the first channel, and reused. Every channel of one H5J file
   // shares the `Channels` group's width/height/frames, and the layers are blended on
@@ -123,6 +171,7 @@ export async function ingestH5J(
       if (!dims) {
         dims = resolveDims(info, decoded.length)
         dispatch(ingestDims(dims))
+        if (dims.notes.length > 0) dispatch(ingestDetails(dims.notes))
         if (dims.warnings.length > 0) dispatch(ingestWarnings(dims.warnings))
         // Every channel's metadata, before any of them has chunks. A layer is declared
         // for each channel at mount -- including channels still converting, which are
@@ -181,30 +230,17 @@ export async function ingestH5J(
         // read. Contrast for the later channels arrives afterwards as a shader-control
         // update on the live layer.
         dispatch(
-          viewerReady(
+          mountAction({
             datasetId,
-            JSON.stringify(
-              buildViewerState({
-                controls: {
-                  ...controls,
-                  contrast: contrastRanges(stats, names.length),
-                },
-                dataset: {
-                  origin,
-                  datasetId,
-                  datasetName,
-                  voxelSize: dims.voxelSize,
-                  bits: VOXEL_BITS,
-                  channelNames: names,
-                  ready: [...ready],
-                },
-                size: dims.size,
-                position: launch.position ?? undefined,
-                crossSectionScale: launch.zoom ?? undefined,
-              })
-            ),
-            describeGeometry(dims.size, names.length)
-          )
+            datasetName,
+            origin,
+            controls,
+            launch,
+            dims,
+            stats,
+            names,
+            ready,
+          })
         )
       }
 
@@ -239,10 +275,253 @@ export async function ingestH5J(
     dispatch(ingestDetails(describeProbe(probe)))
     if (probe.problems.length > 0) dispatch(ingestWarnings(probe.problems))
 
+    // Last, after every chunk: the marker's presence is what says this dataset can be
+    // viewed, so writing it earlier would make a run that died halfway look finished.
+    // A failure to write it is not a failure of the conversion -- it only means this
+    // dataset looks like debris to eviction and goes early.
+    await markComplete({
+      datasetId,
+      name: datasetName,
+      sourceUrl: sourceUrl ?? null,
+      now: Date.now(),
+      info,
+      dims,
+      stats,
+    }).catch(() => undefined)
+
     dispatch(ingestDone())
   } catch (exc) {
-    dispatch(ingestFailed(exc instanceof Error ? exc.message : String(exc)))
+    const message = exc instanceof Error ? exc.message : String(exc)
+
+    // A failure that wrote nothing readable leaves a tree that no layer can resolve and
+    // nothing will ever list -- pure consumed space. Removing it matters most for the
+    // failure that is most likely: running out of room. Leaving the debris behind makes
+    // the NEXT conversion likelier to fail for the same reason, which is how one full
+    // disk turns into a run of failures.
+    //
+    // Only when nothing became readable, though. Once a channel has landed the viewer
+    // has mounted on it and is serving its chunks; deleting the tree under a live layer
+    // would replace a partial success with a broken one.
+    if (!ready.some(Boolean)) {
+      try {
+        await removeDataset(datasetId)
+      } catch {
+        // Reporting the original failure matters more than reporting a failure to tidy
+        // up after it.
+      }
+      dispatch(ingestFailed(message))
+    } else {
+      const done = ready.filter(Boolean).length
+      dispatch(
+        ingestFailed(
+          `${message} (${done} of ${names.length} channels converted before this ` +
+            `failed; what converted is still viewable, and the rest can be reclaimed ` +
+            `from Settings)`
+        )
+      )
+    }
   }
+}
+
+/**
+ * Show a volume that has already been converted, without opening the H5J at all.
+ *
+ * Returns true when it mounted. The whole point is what it skips: no download of a file
+ * that can run to hundreds of megabytes, no ffmpeg, no chunking, no pyramid. The marker
+ * carries the geometry and the measured contrast, which are the only things the mount
+ * needed the file for.
+ *
+ * It probes over HTTP before committing. A tree can be present but unservable -- a
+ * partial delete, a level whose chunks never landed -- and zarr reads a missing chunk as
+ * fill_value, so the failure would be a silently black volume rather than an error. The
+ * probe is a few requests against data already on disk; a wrong reuse costs the user a
+ * volume that looks empty for no visible reason.
+ */
+export async function reuseDataset(
+  opts: {
+    marker: DatasetMarker
+    controls: ChannelControls
+    origin: string
+    launch: LaunchParams
+  },
+  dispatch: Dispatch
+): Promise<boolean> {
+  const { marker, controls, origin, launch } = opts
+  const names = marker.info.channels.map((channel) => channel.name)
+
+  const probe = await probeDataset(origin, marker.id, names.length).catch(
+    () => null
+  )
+  if (!probe || probe.problems.length > 0) {
+    // Unservable, so it is not a cache entry -- it is debris that would render black.
+    // Removing it means the reconversion that follows has room, and that a second
+    // attempt does not hit the same broken tree.
+    await removeDataset(marker.id).catch(() => undefined)
+    return false
+  }
+
+  dispatch(ingestStarted(names.length))
+  dispatch(ingestDims(marker.dims))
+  if (marker.dims.notes?.length) dispatch(ingestDetails(marker.dims.notes))
+  marker.stats.forEach((stats, index) => {
+    if (stats) dispatch(ingestStats(index, stats))
+  })
+  names.forEach((_, index) => dispatch(channelReady(index)))
+
+  dispatch(
+    mountAction({
+      datasetId: marker.id,
+      datasetName: marker.name || marker.id,
+      origin,
+      controls,
+      launch,
+      dims: marker.dims,
+      stats: marker.stats,
+      names,
+      // Every channel is on disk, so every layer is visible from the start -- the
+      // staggered reveal exists for conversion, and there is nothing to stagger here.
+      ready: names.map(() => true),
+    })
+  )
+  dispatch(ingestDetails(describeProbe(probe)))
+  dispatch(ingestDone())
+  return true
+}
+
+/**
+ * The action that puts a dataset on screen.
+ *
+ * Shared by the two ways one gets there -- converted just now, or found already
+ * converted -- because they must produce the same viewer. Two builders would drift, and
+ * the drift would show up as a cached volume rendering differently from a fresh one,
+ * which is the kind of difference nobody thinks to look for.
+ */
+function mountAction(opts: {
+  datasetId: string
+  datasetName: string
+  origin: string
+  controls: ChannelControls
+  launch: LaunchParams
+  dims: ResolvedDims
+  stats: Array<ChannelStats | undefined>
+  names: string[]
+  ready: boolean[]
+}): Action {
+  return viewerReady(
+    opts.datasetId,
+    JSON.stringify(
+      buildViewerState({
+        controls: {
+          ...opts.controls,
+          contrast: contrastRanges(opts.stats, opts.names.length),
+        },
+        dataset: {
+          origin: opts.origin,
+          datasetId: opts.datasetId,
+          datasetName: opts.datasetName,
+          voxelSize: opts.dims.voxelSize,
+          bits: VOXEL_BITS,
+          channelNames: opts.names,
+          ready: [...opts.ready],
+        },
+        size: opts.dims.size,
+        position: opts.launch.position ?? undefined,
+        crossSectionScale: opts.launch.zoom ?? undefined,
+      })
+    ),
+    describeGeometry(opts.dims.size, opts.names.length)
+  )
+}
+
+/**
+ * Make room for `needed` bytes, evicting least-recently-used datasets if necessary.
+ *
+ * Returns null when there is room, or a message explaining why there cannot be.
+ *
+ * The order matters: work out the whole plan first, and only carry it out if it gets
+ * there. Evicting greedily until the disk runs out would in the worst case delete every
+ * volume the user has and then fail anyway -- costing them everything and buying
+ * nothing. Better to refuse while their data is intact and let them choose.
+ */
+async function makeRoom(opts: {
+  needed: number
+  keep: string[]
+  evictionPercent: number
+  dispatch: Dispatch
+}): Promise<string | null> {
+  const { usage, quota } = await storageEstimate().catch(() => ({
+    usage: 0,
+    quota: 0,
+  }))
+  // A browser that reports no quota tells us nothing, and refusing on no information
+  // would block a conversion that might well have fitted.
+  if (quota <= 0) return null
+
+  // Free against the configured budget, not against the whole quota. That is what makes
+  // eviction start at the threshold rather than at the cliff: the app keeps itself
+  // inside its share, leaving the rest for other sites drawing on the same disk, and
+  // leaving a conversion that runs over its projection somewhere to go.
+  const budget = storageBudget(quota, opts.evictionPercent)
+  const free = Math.max(0, budget - usage)
+  if (opts.needed <= free) return null
+
+  // Announced before the survey, not just before the deleting. Measuring an unmarked
+  // dataset means a handle per file, so on a cache full of them the survey alone takes
+  // long enough to look like a hang.
+  opts.dispatch(ingestPhase("evicting", "checking what is stored"))
+  opts.dispatch(ingestProgress(null))
+  const records = await listDatasetRecords().catch(() => [])
+  const plan = planEviction(records, {
+    needed: opts.needed,
+    free,
+    keep: opts.keep,
+  })
+
+  const advice =
+    `Open Settings to see what is stored, and to raise the storage limit if you want ` +
+    `this app to use more of the browser's quota. The quota is itself a fraction of ` +
+    `the machine's free disk, so freeing space on the machine raises it too.`
+
+  if (!applyPlan(plan).length) {
+    return (
+      `This file needs about ${formatBytes(opts.needed)} of browser storage but only ` +
+      `${formatBytes(free)} is free, and clearing older volumes would recover just ` +
+      `${formatBytes(plan.reclaimed)} of that. Nothing has been deleted. ${advice}`
+    )
+  }
+
+  const doomed = applyPlan(plan)
+  const volumes = `${doomed.length} volume${doomed.length === 1 ? "" : "s"}`
+  opts.dispatch(
+    ingestPhase("evicting", `${volumes}, ${formatBytes(plan.reclaimed)}`)
+  )
+  opts.dispatch(ingestProgress(0))
+  await evictDatasets(doomed, (done, total) => {
+    opts.dispatch(
+      ingestPhase(
+        "evicting",
+        `${volumes}, ${formatBytes(plan.reclaimed)} · ${done}/${total}`
+      )
+    )
+    opts.dispatch(ingestProgress(total === 0 ? null : done / total))
+  })
+  opts.dispatch(
+    ingestDetails([
+      `Reclaimed ${formatBytes(plan.reclaimed)} by removing ${volumes}.`,
+    ])
+  )
+
+  // Re-measured rather than assumed: a removal that silently failed, or a quota that
+  // moved while we worked, both show up here rather than as a write failure partway in.
+  const after = await storageEstimate().catch(() => ({ usage, quota }))
+  const freeNow = Math.max(0, after.quota - after.usage)
+  if (opts.needed > freeNow) {
+    return (
+      `This file needs about ${formatBytes(opts.needed)} of browser storage and only ` +
+      `${formatBytes(freeNow)} is free after clearing older volumes. ${advice}`
+    )
+  }
+  return null
 }
 
 /**
@@ -385,12 +664,96 @@ export function describeGeometry(size: Vec3, channelCount: number): string {
  * a hash of the source URL and its validator, so that reloading the same file reuses
  * the conversion instead of storing a second copy of it.
  */
-export function makeDatasetId(sourceName: string): string {
-  const base =
-    sourceName
-      .replace(/^.*[/\\]/, "")
-      .replace(/\.h5j$/i, "")
-      .replace(/[^a-zA-Z0-9._-]+/g, "-")
-      .slice(0, 60) || "volume"
-  return `${base}-${Date.now().toString(36)}`
+/**
+ * A hash of the whole source identity, as a short path-safe string.
+ *
+ * Two independent FNV-1a passes with different primes, giving ~64 bits. Not
+ * cryptographic and does not need to be: the only requirement is that two different
+ * volumes do not land on the same key, and 64 bits is far past the point where that
+ * matters for a per-browser cache.
+ */
+function hashIdentity(identity: string): string {
+  let a = 0x811c9dc5
+  let b = 0x9e3779b9
+  for (let i = 0; i < identity.length; i += 1) {
+    const code = identity.charCodeAt(i)
+    a = Math.imul(a ^ code, 0x01000193)
+    b = Math.imul(b ^ code, 0x85ebca6b)
+  }
+  const part = (n: number) => (n >>> 0).toString(36).padStart(7, "0")
+  return part(a) + part(b)
+}
+
+/**
+ * What identifies a source, for the purpose of "have we already converted this?".
+ *
+ * For a URL that is the URL, plus whatever the server will tell us cheaply about the
+ * bytes behind it. `Content-Length` and `Last-Modified` are both CORS-safelisted, so
+ * they are readable cross-origin with no cooperation from the bucket beyond the CORS it
+ * already needs -- and together they answer the one question a URL alone cannot: has
+ * this file been replaced since we converted it? When the HEAD fails, the URL alone is
+ * still a reasonable identity; the cost of being wrong is a stale render of a file that
+ * was regenerated in place, which is rare for archival data.
+ *
+ * For a dropped file there is no URL, so name, size and modification time stand in.
+ */
+const IDENTITY_HEAD_TIMEOUT_MS = 3000
+
+export async function sourceIdentity(src: File | string): Promise<string> {
+  if (typeof src !== "string") {
+    return `file:${src.name}:${src.size}:${src.lastModified}`
+  }
+  try {
+    // Bounded, because this sits in front of everything: the reuse check runs before
+    // the file is opened, so a HEAD that hangs would stall the whole load with an
+    // empty screen and nothing in the console. Three seconds is far longer than a
+    // HEAD should take, and giving up costs only the freshness check -- the URL alone
+    // is still a usable identity.
+    const response = await fetch(src, {
+      method: "HEAD",
+      signal: AbortSignal.timeout(IDENTITY_HEAD_TIMEOUT_MS),
+    })
+    if (response.ok) {
+      const length = response.headers.get("content-length") ?? ""
+      const modified = response.headers.get("last-modified") ?? ""
+      if (length || modified) return `${src}:${length}:${modified}`
+    }
+  } catch {
+    // A server that refuses HEAD, or a network hiccup. The URL on its own still
+    // identifies the file well enough to be worth caching against.
+  }
+  return src
+}
+
+/**
+ * The directory name for one converted volume: a readable prefix and a hash of the full
+ * source identity.
+ *
+ * Content-addressed, so loading the same file twice yields the same key and the second
+ * load can mount what the first wrote. The layout version is folded in, so a build that
+ * changes the on-disk format never looks at a tree written by one that did not.
+ *
+ * The hash is not decoration, and the prefix must never be trusted on its own. Real
+ * names run past a hundred characters and differ well past any sane truncation:
+ * `…-JRC2018_VNC_FEMALE_40x_DS-aligned_stack` and `…-JRC2018_VNC_Unisex_40x_DS-aligned_stack`
+ * are different volumes whose first sixty characters are identical. The prefix also
+ * comes from the basename, so the same filename in two different folders collides as
+ * well. An elided name cannot identify a volume; the hash of the full URL can.
+ *
+ * The timestamp is what currently makes every load a fresh dataset. Removing it turns
+ * this into a content-addressed id -- the same file yielding the same key -- which is
+ * the prerequisite for reusing a conversion instead of repeating it.
+ */
+export function makeDatasetId(sourceName: string, identity?: string): string {
+  const material = `v${LAYOUT_VERSION}/${VOXEL_BITS}/${identity ?? sourceName}`
+  const cleaned = sourceName
+    .replace(/^.*[/\\]/, "")
+    .replace(/\.h5j$/i, "")
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .slice(0, 48)
+  // Must contain something that is not punctuation. `.` and `._-` survive the filter
+  // above, so a file called `..h5j` would otherwise ask for a directory named `.` --
+  // and a truthiness check does not catch that, because "." is truthy.
+  const base = /[a-zA-Z0-9]/.test(cleaned) ? cleaned : "volume"
+  return `${base}-${hashIdentity(material)}`
 }

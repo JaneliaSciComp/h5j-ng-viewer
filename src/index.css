@@ -118,6 +118,81 @@ body {
   cursor: default;
 }
 
+/* Storage, hard right. `margin-left: auto` is what separates it and the gear from the
+ * per-channel controls, which stay packed to the left beside the chips they act on. */
+.bar-memory {
+  flex: 0 0 auto;
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  cursor: default;
+}
+
+.bar-memory-label {
+  font-size: 12px;
+}
+
+/* The two segments are laid out in a row rather than absolutely positioned, so the
+ * projected one simply starts where the used one ends -- no arithmetic to keep in sync
+ * with the widths the component computes. */
+.bar-memory-track {
+  position: relative;
+  display: flex;
+  width: 90px;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+/* A hairline where eviction begins, drawn over the fill so it stays visible whether the
+   bar has reached it or not. */
+.bar-memory-track::after {
+  content: "";
+  position: absolute;
+  left: var(--eviction-mark, 100%);
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--text-dim);
+}
+
+.bar-memory-used {
+  background: var(--accent);
+}
+
+/* Hatched, not just paler: this segment is a prediction, and a solid block would read as
+ * space already spent. */
+.bar-memory-projected {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--text-dim) 0 2px,
+    transparent 2px 4px
+  );
+}
+
+.bar-memory-track.over .bar-memory-used {
+  background: var(--warn);
+}
+
+.bar-memory-track.over .bar-memory-projected {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--warn) 0 2px,
+    transparent 2px 4px
+  );
+}
+
+.bar-memory-value {
+  width: 32px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 .bar-progress {
   flex: 0 1 auto;
   color: var(--text-dim);
@@ -650,6 +725,54 @@ legend {
   overflow-wrap: anywhere;
   color: var(--text-dim);
   font-size: 12px;
+}
+
+/* Wrapped and selectable, unlike the ellipsized copy in the top bar. An OPFS failure
+ * message carries the fault name and the file path, and both are worth copying into a
+ * bug report verbatim. */
+/* Label, number box and explanation on one line, wrapping as needed. */
+.settings-field {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 10px;
+  color: var(--text-dim);
+}
+
+/* Stays with the number it qualifies, whatever the dialog width. */
+.settings-field-unit {
+  white-space: nowrap;
+}
+
+/* The sentence under a field, rather than beside it. */
+.settings-note {
+  margin: -4px 0 10px;
+  color: var(--text-dim);
+}
+
+.settings-field input {
+  width: 5em;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text);
+  font: inherit;
+}
+
+.settings-error {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgb(229 83 75 / 0.12);
+  border: 1px solid var(--error);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-word;
+  user-select: text;
 }
 
 .settings-warnings,

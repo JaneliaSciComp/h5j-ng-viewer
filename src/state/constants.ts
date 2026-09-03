@@ -54,6 +54,9 @@ const C = {
   CAMERA_MOVED: "CAMERA_MOVED",
 
   SETTINGS_OPENED: "SETTINGS_OPENED",
+
+  // How full storage may get before old volumes are discarded.
+  EVICTION_PERCENT_CHANGED: "EVICTION_PERCENT_CHANGED",
 } as const
 
 export default C

@@ -110,8 +110,9 @@ describe("resolveDims", () => {
     expect(dims.padX).toBe(264)
     expect(dims.padY).toBe(136)
     expect(dims.size).toEqual({ x: 256, y: 128, z: 64 })
-    expect(dims.warnings).toHaveLength(1)
-    expect(dims.warnings[0]).toMatch(/padded/i)
+    expect(dims.notes).toHaveLength(1)
+    expect(dims.notes[0]).toMatch(/padded/i)
+    expect(dims.warnings).toEqual([])
   })
 
   it("(c) resolves padding via the ceil-8 fallback", () => {
@@ -134,8 +135,31 @@ describe("resolveDims", () => {
     expect(dims.padX).toBe(1216)
     expect(dims.padY).toBe(568)
     expect(dims.size).toEqual({ x: 1210, y: 566, z: 174 })
-    expect(dims.warnings).toHaveLength(1)
-    expect(dims.warnings[0]).toMatch(/padded/i)
+    expect(dims.notes).toHaveLength(1)
+    expect(dims.notes[0]).toMatch(/padded/i)
+    expect(dims.warnings).toEqual([])
+  })
+
+  it("keeps routine padding out of warnings, so the alert count means something", () => {
+    // Padding fires for almost every real stack: H.265 rounds up to a multiple of 8 and
+    // few volumes are already a multiple of 8. Counted as a warning it would be on
+    // permanently, which teaches people to ignore the counter that also reports a
+    // disagreeing frame count or a missing voxel size.
+    const info = makeInfo({ width: 1210, height: 566, frames: 174 })
+    const dims = resolveDims(info, 1216 * 568 * 174)
+
+    expect(dims.warnings).toEqual([])
+    expect(dims.notes.some((note) => /padded/i.test(note))).toBe(true)
+  })
+
+  it("still warns when something is actually wrong, alongside a padding note", () => {
+    // Both at once: the frame count disagrees AND the frames are padded. The warning
+    // has to survive the note being separated out.
+    const info = makeInfo({ width: 1210, height: 566, frames: 999 })
+    const dims = resolveDims(info, 1216 * 568 * 174)
+
+    expect(dims.warnings.some((w) => /disagrees/i.test(w))).toBe(true)
+    expect(dims.notes.some((n) => /padded/i.test(n))).toBe(true)
   })
 
   it("(d) derives nZ from the data when it disagrees with nominal frames", () => {
@@ -147,6 +171,7 @@ describe("resolveDims", () => {
     expect(dims.size.z).toBe(70)
     expect(dims.warnings).toHaveLength(1)
     expect(dims.warnings[0]).toMatch(/disagrees/i)
+    expect(dims.notes).toEqual([])
   })
 
   it("(e) falls back to {1,1,1} with a warning when voxel_size is missing", () => {

@@ -2,6 +2,7 @@ import type { ReactElement } from "react"
 import { ChannelChips } from "@/components/ChannelChips"
 import { ChannelControls } from "@/components/ChannelControls"
 import { ProgressText } from "@/components/ProgressText"
+import { MemoryBar } from "@/components/MemoryBar"
 import { SourceName } from "@/components/SourceName"
 import {
   formatSamples,
@@ -16,9 +17,12 @@ import type { ChannelInfo } from "@/types"
  * The entire user interface: one row above Neuroglancer, which gets everything else.
  *
  * Left to right, packed to the left and evenly spaced: the file's name, a chip per
- * channel, the conversion readout, the controls for the channel being edited, the 3D
- * projection toggle, and the gear. Nothing is pushed to the far edge -- the eye and swatch sit next to the chips
- * they act on, which is where the eye travels anyway.
+ * channel, the conversion readout, the controls for the channel being edited, and the 3D
+ * projection toggle. The eye and swatch are not pushed to an edge -- they sit next to
+ * the chips they act on, which is where the eye travels anyway.
+ *
+ * Storage and the gear are the exception, hard right: neither is about the channel being
+ * edited, and separating them keeps the per-channel group readable as a group.
  *
  * The name comes first because it says what everything to its right acts on, and it is
  * the only piece that shrinks. Settings still carries the full source URL.
@@ -31,6 +35,8 @@ export function TopBar(props: {
   convertingIndex: number | null
   fraction: number | null
   phase: Phase
+  /** What the current phase is working on, shown beside its label. */
+  phaseDetail?: string
   warnings: string[]
   error: string | null
   picked: {
@@ -47,6 +53,12 @@ export function TopBar(props: {
   onVolumeRenderingChange: (on: boolean) => void
   projectionSamples: number
   onProjectionSamplesChange: (samples: number) => void
+  usage: number
+  quota: number
+  /** Projected size of the conversion in flight, or null when nothing is pending. */
+  projected: number | null
+  persisted: boolean
+  evictionPercent: number
   onToggleVisibility: (index: number) => void
   onPick: (index: number) => void
   onColorChange: (index: number, color: string) => void
@@ -76,6 +88,7 @@ export function TopBar(props: {
       <ProgressText
         phase={props.phase}
         fraction={props.fraction}
+        detail={props.phaseDetail}
         warnings={props.warnings}
         error={props.error}
         onShowDetails={props.onOpenSettings}
@@ -141,6 +154,14 @@ export function TopBar(props: {
       <span className="bar-samples-value">
         {props.volumeRendering ? formatSamples(props.projectionSamples) : "—"}
       </span>
+
+      <MemoryBar
+        usage={props.usage}
+        quota={props.quota}
+        projected={props.projected}
+        persisted={props.persisted}
+        evictionPercent={props.evictionPercent}
+      />
 
       <button
         type="button"

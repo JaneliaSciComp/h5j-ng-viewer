@@ -35,6 +35,22 @@ function unsupportedReason(): string | null {
       "are required."
     )
   }
+  // Safari ships OPFS with only the worker-side createSyncAccessHandle(), and no async
+  // createWritable() at all. Every metadata and marker file goes through the latter, so
+  // the first write fails -- and it fails deep inside a conversion, after a download and
+  // a decode, leaving a half-written tree behind. Checked on the prototype rather than
+  // by attempting a write, so the answer arrives before any of that work starts.
+  if (
+    typeof FileSystemFileHandle === "undefined" ||
+    typeof FileSystemFileHandle.prototype.createWritable !== "function"
+  ) {
+    return (
+      "This browser's Origin Private File System does not support createWritable(), " +
+      "which is how converted volumes are written to it. Safari is the usual cause: " +
+      "it provides only the worker-side createSyncAccessHandle(). Chrome or Edge " +
+      "108+, or Firefox 111+, are required."
+    )
+  }
   if (typeof SharedArrayBuffer === "undefined") {
     return (
       "SharedArrayBuffer is unavailable, so the H.265 decoder cannot start. The " +

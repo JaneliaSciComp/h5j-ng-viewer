@@ -48,8 +48,20 @@ export interface ResolvedDims {
   padY: number
   /** Voxel size in micrometers. Defaults to 1,1,1 with a warning when unknown. */
   voxelSize: Vec3
-  /** Human-readable notes to surface in the UI. Empty when everything reconciled. */
+  /**
+   * Things that may mean the volume is wrong: a frame count that disagrees with the
+   * file, a missing voxel size. These raise the alert count in the top bar, so only
+   * findings that deserve to interrupt someone belong here.
+   */
   warnings: string[]
+  /**
+   * Things that merely record what was decided. Padding lives here rather than in
+   * `warnings` because it fires for almost every real stack -- H.265 rounds frames up
+   * to a multiple of 8, and few volumes are already a multiple of 8 -- and an alert
+   * that is always on is one people learn to ignore, which costs them the alerts that
+   * matter.
+   */
+  notes: string[]
 }
 
 /**

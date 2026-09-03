@@ -12,20 +12,27 @@ export function isBusy(state: AppState): boolean {
 }
 
 /**
- * Projected output size for the pending conversion, or null when there is nothing
- * pending. Shown before decoding starts, because the input file size is not a useful
- * predictor -- H5J is H.265-compressed, so a small file can decode to many times its
- * size.
+ * Bytes still to be written for this container, or null when nothing is pending.
+ *
+ * Counted from the channels not yet converted rather than from the whole container,
+ * which is what makes it survive the mount. It used to return null as soon as
+ * `dataset.viewerState` existed -- fine when the viewer mounted after the LAST channel,
+ * but the viewer now mounts after the first, so the figure vanished while most of the
+ * writing was still ahead. That is precisely the stretch where "will this fit" is worth
+ * asking, and the storage gauge showed no projection through all of it.
+ *
+ * Shown before decoding starts because the input file size is not a useful predictor --
+ * H5J is H.265-compressed, so a small file can decode to many times its size.
  */
 export function projectedBytes(state: AppState): number | null {
   const { info } = state.source
-  if (!info || state.dataset.viewerState) return null
+  if (!info) return null
   // Every channel is converted, not just the visible ones.
-  return projectedOutputBytes(
-    info.nominalSize,
-    info.channels.length,
-    VOXEL_BITS
-  )
+  const remaining = info.channels.filter(
+    (_, index) => state.dataset.ready[index] !== true
+  ).length
+  if (remaining === 0) return null
+  return projectedOutputBytes(info.nominalSize, remaining, VOXEL_BITS)
 }
 
 /**

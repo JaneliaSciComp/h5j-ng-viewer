@@ -155,6 +155,7 @@ export function resolveDims(
   decodedVoxelCount: number
 ): ResolvedDims {
   const warnings: string[] = []
+  const notes: string[] = []
   const trueW = info.nominalSize.x
   const trueH = info.nominalSize.y
 
@@ -225,8 +226,10 @@ export function resolveDims(
     )
   }
 
+  // A note, not a warning: the cropping is routine and correct, and saying so on every
+  // load would bury the two findings above that actually mean something is wrong.
   if (chosen.padW > trueW || chosen.padH > trueH) {
-    warnings.push(
+    notes.push(
       `Decoded frames are padded to ${chosen.padW}x${chosen.padH} ` +
         `(nominal size is ${trueW}x${trueH}); the padding will be cropped.`
     )
@@ -250,6 +253,7 @@ export function resolveDims(
     padY: chosen.padH,
     voxelSize,
     warnings,
+    notes,
   }
 }
 

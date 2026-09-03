@@ -14,7 +14,15 @@ import type { LaunchParams } from "@/lib/url"
  * Phases the UI shows. `fetching` and `decoding` are ours rather than the ingest
  * worker's: the worker only hears about a channel once it has been decoded.
  */
-export type Phase = IngestPhase | "fetching" | "decoding" | "idle"
+export type Phase =
+  | IngestPhase
+  | "fetching"
+  | "decoding"
+  // Reclaiming space before a conversion can start. Its own phase because it can take
+  // minutes on a large cache -- deleting gigabytes is not instant -- and without one
+  // the bar sat on the previous label while the app appeared to have stalled.
+  | "evicting"
+  | "idle"
 
 export type Action =
   | { type: typeof C.LAUNCH_PARSED; launch: LaunchParams }
@@ -59,6 +67,7 @@ export type Action =
       zoom: number | null
     }
   | { type: typeof C.SETTINGS_OPENED; open: boolean }
+  | { type: typeof C.EVICTION_PERCENT_CHANGED; percent: number }
 
 /**
  * How the ingest pipeline talks to the store. Deliberately not `React.Dispatch`:
@@ -210,4 +219,9 @@ export const cameraMoved = (
 export const settingsOpened = (open: boolean): Action => ({
   type: C.SETTINGS_OPENED,
   open,
+})
+
+export const evictionPercentChanged = (percent: number): Action => ({
+  type: C.EVICTION_PERCENT_CHANGED,
+  percent,
 })

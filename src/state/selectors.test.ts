@@ -9,7 +9,7 @@ import {
 } from "@/state/actions"
 import type { Action } from "@/state/actions"
 import { ingestDims, viewerReady } from "@/state/actions"
-import { layerDataset, pickedChannel } from "@/state/selectors"
+import { layerDataset, pickedChannel, projectedBytes } from "@/state/selectors"
 import type { H5JInfo, ResolvedDims } from "@/types"
 
 function run(actions: Action[], from: AppState = initialState): AppState {
@@ -68,6 +68,39 @@ describe("pickedChannel", () => {
   })
 })
 
+describe("projectedBytes", () => {
+  const opened = run([sourceOpened(info, "s.h5j", null)])
+
+  it("is the whole container before anything has converted", () => {
+    expect(projectedBytes(opened)).toBeGreaterThan(0)
+  })
+
+  it("shrinks as channels land, rather than vanishing at the first one", () => {
+    // The regression this pins: it used to return null as soon as `viewerState` was
+    // set. That was correct while the viewer mounted after the LAST channel, but it now
+    // mounts after the first — so the storage gauge lost its projection for the whole
+    // stretch where "will this fit" is the question being asked.
+    const mounted = run(
+      [viewerReady("ds1", "{}", "64×64×64"), channelReady(0)],
+      opened
+    )
+    const whole = projectedBytes(opened)
+    const half = projectedBytes(mounted)
+    expect(half).not.toBeNull()
+    expect(half!).toBeLessThan(whole!)
+    expect(half!).toBeCloseTo(whole! / 2, -3)
+  })
+
+  it("is null once every channel has converted", () => {
+    const done = run([channelReady(0), channelReady(1)], opened)
+    expect(projectedBytes(done)).toBeNull()
+  })
+
+  it("is null before a container is open", () => {
+    expect(projectedBytes(initialState)).toBeNull()
+  })
+})
+
 describe("layerDataset", () => {
   const dims: ResolvedDims = {
     size: { x: 64, y: 64, z: 64 },
@@ -75,6 +108,7 @@ describe("layerDataset", () => {
     padY: 64,
     voxelSize: { x: 0.5, y: 0.5, z: 1 },
     warnings: [],
+    notes: [],
   }
   const converting = [
     sourceOpened(info, "s.h5j", null),

@@ -24,6 +24,7 @@ import {
   stepForSamples,
 } from "@/lib/projection"
 import { applyColorOverrides } from "@/lib/ingest"
+import { clampEvictionPercent, loadEvictionPercent } from "@/lib/prefs"
 
 export interface AppState {
   /**
@@ -90,6 +91,12 @@ export interface AppState {
     quota: number
     persisted: boolean
     clearing: boolean
+    /**
+     * How full storage may get before old volumes are discarded, as a percentage of
+     * the quota. A preference rather than session state, so it is seeded from
+     * localStorage and written back on change.
+     */
+    evictionPercent: number
   }
 
   /**
@@ -142,7 +149,13 @@ export const initialState: AppState = {
     details: [],
     error: null,
   },
-  storage: { usage: 0, quota: 0, persisted: false, clearing: false },
+  storage: {
+    usage: 0,
+    quota: 0,
+    persisted: false,
+    clearing: false,
+    evictionPercent: loadEvictionPercent(),
+  },
   camera: { position: null, zoom: null },
   ui: { settingsOpen: false, pickedChannel: null },
 }
@@ -442,6 +455,17 @@ export function reducer(state: AppState, action: Action): AppState {
       return {
         ...state,
         camera: { position: action.position, zoom: action.zoom },
+      }
+
+    case C.EVICTION_PERCENT_CHANGED:
+      return {
+        ...state,
+        storage: {
+          ...state.storage,
+          // Clamped here rather than trusted from the input, so a typed-in 5000 or a
+          // blanked field cannot turn into a budget of five thousand percent or NaN.
+          evictionPercent: clampEvictionPercent(action.percent),
+        },
       }
 
     case C.SETTINGS_OPENED:
