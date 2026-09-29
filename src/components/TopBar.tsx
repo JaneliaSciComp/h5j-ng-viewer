@@ -1,37 +1,28 @@
 import type { ReactElement } from "react"
-import { ChannelChips } from "@/components/ChannelChips"
-import { ChannelControls } from "@/components/ChannelControls"
+import { ChannelStrip } from "@/components/ChannelStrip"
+import { SliceSlider } from "@/components/SliceSlider"
 import { ProgressText } from "@/components/ProgressText"
 import { MemoryBar } from "@/components/MemoryBar"
 import { SourceName } from "@/components/SourceName"
-import {
-  formatSamples,
-  PROJECTION_SAMPLE_STEPS,
-  samplesForStep,
-  stepForSamples,
-} from "@/lib/projection"
 import type { Phase } from "@/state/actions"
 import type { ChannelInfo } from "@/types"
 
 /**
  * The entire user interface: one row above Neuroglancer, which gets everything else.
  *
- * Left to right, packed to the left and evenly spaced: the file's name, a chip per
- * channel, the conversion readout, the controls for the channel being edited, and the 3D
- * projection toggle. The eye and swatch are not pushed to an edge -- they sit next to
- * the chips they act on, which is where the eye travels anyway.
+ * Left to right: the file's name (which shrinks first, since it only labels the rest); a
+ * readout for whole-file phases and any error or warning; one control group per channel --
+ * label, eye, swatch, opacity; a Z-slice slider; and, hard right, storage and the gear.
  *
- * Storage and the gear are the exception, hard right: neither is about the channel being
- * edited, and separating them keeps the per-channel group readable as a group.
- *
- * The name comes first because it says what everything to its right acts on, and it is
- * the only piece that shrinks. Settings still carries the full source URL.
+ * There is no "channel being edited" any more: every channel carries its own controls, so
+ * the eye and swatch always sit under the channel they act on.
  */
 export function TopBar(props: {
   channels: ChannelInfo[]
   visible: boolean[]
   ready: boolean[]
   colors: string[]
+  opacity: number[]
   convertingIndex: number | null
   fraction: number | null
   phase: Phase
@@ -39,20 +30,14 @@ export function TopBar(props: {
   phaseDetail?: string
   warnings: string[]
   error: string | null
-  picked: {
-    index: number
-    name: string
-    visible: boolean
-    color: string
-  } | null
-  pickedOpacity: number
   /** The file's name, and where it came from -- null for a dropped local file. */
   sourceName: string
   sourceUrl: string | null
-  volumeRendering: boolean
-  onVolumeRenderingChange: (on: boolean) => void
-  projectionSamples: number
-  onProjectionSamplesChange: (samples: number) => void
+  /** Current Z voxel index, or null before the viewer has reported a position. */
+  sliceZ: number | null
+  /** Depth of the volume in voxels, or null before dims are known. */
+  sliceDepth: number | null
+  onScrub: (z: number) => void
   usage: number
   quota: number
   /** Projected size of the conversion in flight, or null when nothing is pending. */
@@ -60,7 +45,6 @@ export function TopBar(props: {
   persisted: boolean
   evictionPercent: number
   onToggleVisibility: (index: number) => void
-  onPick: (index: number) => void
   onColorChange: (index: number, color: string) => void
   onOpacityChange: (index: number, opacity: number) => void
   onOpenSettings: () => void
@@ -71,89 +55,38 @@ export function TopBar(props: {
     <header className="topbar">
       <SourceName name={props.sourceName} url={props.sourceUrl} />
 
-      {hasData ? (
-        <ChannelChips
-          channels={props.channels}
-          visible={props.visible}
-          ready={props.ready}
-          convertingIndex={props.convertingIndex}
-          fraction={props.fraction}
-          picked={props.picked?.index ?? null}
-          colors={props.colors}
-          onToggleVisibility={props.onToggleVisibility}
-          onPick={props.onPick}
-        />
-      ) : null}
-
       <ProgressText
         phase={props.phase}
         fraction={props.fraction}
         detail={props.phaseDetail}
+        channelIndex={props.convertingIndex}
         warnings={props.warnings}
         error={props.error}
         onShowDetails={props.onOpenSettings}
       />
 
       {hasData ? (
-        <ChannelControls
-          channel={props.picked}
-          opacity={props.pickedOpacity}
+        <ChannelStrip
+          channels={props.channels}
+          visible={props.visible}
+          ready={props.ready}
+          colors={props.colors}
+          opacity={props.opacity}
+          convertingIndex={props.convertingIndex}
+          fraction={props.fraction}
           onToggleVisibility={props.onToggleVisibility}
           onColorChange={props.onColorChange}
           onOpacityChange={props.onOpacityChange}
         />
       ) : null}
 
-      {/* One switch for the whole view rather than one per channel: it turns the 3D
-          panel from three intersecting planes into a projection of the volume, which is
-          not a property of any single channel. Left unchecked by default because it
-          raycasts, so it costs GPU time that a user looking at slices should not pay. */}
-      <label
-        className="bar-toggle"
-        title={
-          hasData
-            ? "Project the volume in the 3D panel (maximum intensity) instead of showing only the section planes"
-            : "Project the volume in the 3D panel — available once a file is loaded"
-        }
-      >
-        <input
-          type="checkbox"
-          checked={props.volumeRendering}
-          disabled={!hasData}
-          onChange={(event) =>
-            props.onVolumeRenderingChange(event.target.checked)
-          }
-          aria-label="Project the volume in the 3D panel"
+      {hasData ? (
+        <SliceSlider
+          z={props.sliceZ}
+          depth={props.sliceDepth}
+          onScrub={props.onScrub}
         />
-        3D
-      </label>
-
-      {/* Shown but disabled while the projection is off, rather than hidden: a control
-          that appears only once something else is set is a control the user has to
-          discover twice. */}
-      <input
-        type="range"
-        className="bar-samples"
-        min={0}
-        max={PROJECTION_SAMPLE_STEPS.length - 1}
-        step={1}
-        value={stepForSamples(props.projectionSamples)}
-        disabled={!hasData || !props.volumeRendering}
-        onChange={(event) =>
-          props.onProjectionSamplesChange(
-            samplesForStep(Number(event.target.value))
-          )
-        }
-        title={
-          props.volumeRendering
-            ? `3D detail: ${formatSamples(props.projectionSamples)} samples along each ray. Right is finer and costs proportionally more.`
-            : "3D detail — available when 3D is checked"
-        }
-        aria-label="3D projection detail"
-      />
-      <span className="bar-samples-value">
-        {props.volumeRendering ? formatSamples(props.projectionSamples) : "—"}
-      </span>
+      ) : null}
 
       <MemoryBar
         usage={props.usage}

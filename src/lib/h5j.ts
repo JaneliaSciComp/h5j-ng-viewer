@@ -378,12 +378,17 @@ const DEFAULT_PALETTE = [
   "#ac1701", // Turbo swatch 7
 ]
 
+/**
+ * Two-channel stacks get magenta and green rather than the first two Turbo swatches: it is
+ * the conventional pairing for a two-color fluorescence overlay, and the two are opposite
+ * enough that where they coincide reads as white against either alone.
+ */
+const TWO_CHANNEL_PALETTE = ["#ff00ff", "#00ff00"]
+
 /** Pure: default CSS hex color per channel, indexed by its position in the container. */
 export function defaultChannelColors(count: number): string[] {
-  return Array.from(
-    { length: count },
-    (_, i) => DEFAULT_PALETTE[i % DEFAULT_PALETTE.length]
-  )
+  const palette = count === 2 ? TWO_CHANNEL_PALETTE : DEFAULT_PALETTE
+  return Array.from({ length: count }, (_, i) => palette[i % palette.length])
 }
 
 // ---------------------------------------------------------------------------

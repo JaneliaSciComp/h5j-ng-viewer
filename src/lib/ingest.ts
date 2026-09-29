@@ -25,6 +25,11 @@ import {
   pyramid,
 } from "@/lib/zarr"
 import { formatBytes } from "@/lib/bytes"
+import {
+  describeStorage,
+  formatEnvironment,
+  readEnvironment,
+} from "@/lib/environment"
 import { evictDatasets, listDatasetRecords, markComplete } from "@/lib/datasets"
 import type { DatasetMarker } from "@/lib/datasets"
 import { applyPlan, planEviction } from "@/lib/evict"
@@ -293,6 +298,20 @@ export async function ingestH5J(
   } catch (exc) {
     const message = exc instanceof Error ? exc.message : String(exc)
 
+    // Gathered here, at the moment of failure, not when Settings is next opened: the
+    // quota moves, and a figure read minutes later describes a different situation from
+    // the one that broke. Interpreted as well as reported -- "8 KB of 10 GB used" beside
+    // "no space available" is a contradiction a reader should not have to resolve.
+    const env = await readEnvironment().catch(() => null)
+    if (env) {
+      dispatch(
+        ingestDetails([
+          ...describeStorage(env.storage, bytesWrittenFrom(message)),
+          formatEnvironment(env),
+        ])
+      )
+    }
+
     // A failure that wrote nothing readable leaves a tree that no layer can resolve and
     // nothing will ever list -- pure consumed space. Removing it matters most for the
     // failure that is most likely: running out of room. Leaving the debris behind makes
@@ -431,6 +450,17 @@ function mountAction(opts: {
     ),
     describeGeometry(opts.dims.size, opts.names.length)
   )
+}
+
+/**
+ * The byte count an OPFS write failure carries, if it carries one.
+ *
+ * Read back out of the message rather than threaded through as a value, because the
+ * throw crosses a worker boundary on its way here and only the message survives that.
+ */
+function bytesWrittenFrom(message: string): number | undefined {
+  const match = /after (\d+) bytes/.exec(message)
+  return match ? Number(match[1]) : undefined
 }
 
 /**

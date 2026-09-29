@@ -66,6 +66,9 @@ export type Action =
       position: [number, number, number] | null
       zoom: number | null
     }
+  | { type: typeof C.SLICE_SCRUBBED; z: number }
+  | { type: typeof C.CAMERA_APPLIED }
+  | { type: typeof C.VIEW_FITTED; zoom: number }
   | { type: typeof C.SETTINGS_OPENED; open: boolean }
   | { type: typeof C.EVICTION_PERCENT_CHANGED; percent: number }
 
@@ -215,6 +218,30 @@ export const cameraMoved = (
   position: [number, number, number] | null,
   zoom: number | null
 ): Action => ({ type: C.CAMERA_MOVED, position, zoom })
+
+/**
+ * Move the view to a Z slice, from the bar's own slider. The reducer fills in the current
+ * x and y so only depth changes, and marks the result pending for the viewer wire to push.
+ * The opposite direction to `cameraMoved`, and the two never meet: this sets a pending
+ * position that a snapshot never writes, so scrubbing cannot echo back into another scrub.
+ */
+export const sliceScrubbed = (z: number): Action => ({
+  type: C.SLICE_SCRUBBED,
+  z,
+})
+
+/** The pending position has been handed to the live viewer; clear it. */
+export const cameraApplied = (): Action => ({ type: C.CAMERA_APPLIED })
+
+/**
+ * The view has been fitted to its pane at this scale on load. Recorded as the default so
+ * the URL writer persists a zoom only once the user moves off it -- an untouched fit is
+ * not something a shared link needs to carry.
+ */
+export const viewFitted = (zoom: number): Action => ({
+  type: C.VIEW_FITTED,
+  zoom,
+})
 
 export const settingsOpened = (open: boolean): Action => ({
   type: C.SETTINGS_OPENED,

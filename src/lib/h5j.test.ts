@@ -248,6 +248,12 @@ describe("defaultChannelColors", () => {
     ])
   })
 
+  it("pairs a two-channel stack as magenta and green", () => {
+    // The conventional two-color overlay; only for exactly two channels, so it does not
+    // disturb the Turbo palette used for one or three-plus.
+    expect(defaultChannelColors(2)).toEqual(["#ff00ff", "#00ff00"])
+  })
+
   it("ignores what the file called its channels", () => {
     // A Gen1 MCFO stack declares channel_spec "sssr", which used to paint three of its
     // four channels the same white. Two channels a viewer cannot tell apart is worse

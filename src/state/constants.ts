@@ -52,6 +52,14 @@ const C = {
   CLEAR_FINISHED: "CLEAR_FINISHED",
   // Reported by the viewer as the user navigates, so a link can say where to look.
   CAMERA_MOVED: "CAMERA_MOVED",
+  // A camera move we drove from our own controls (the Z-slice slider): queued for the
+  // viewer wire to push, then acknowledged. Kept distinct from CAMERA_MOVED, which flows
+  // the other way -- Neuroglancer to the store -- so the read and write paths cannot loop.
+  SLICE_SCRUBBED: "SLICE_SCRUBBED",
+  CAMERA_APPLIED: "CAMERA_APPLIED",
+  // The scale at which a freshly loaded view fits its pane. Recorded so the URL writer can
+  // tell an untouched default from a zoom the user chose, and only persist the latter.
+  VIEW_FITTED: "VIEW_FITTED",
 
   SETTINGS_OPENED: "SETTINGS_OPENED",
 

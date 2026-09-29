@@ -64,13 +64,22 @@ export async function resolveDir(
  * data, NoModificationAllowedError means something else still holds the file open, and
  * NotAllowedError means permission. All three are indistinguishable from the message.
  */
-function opfsFailure(err: unknown, action: string, path: string): Error {
+function opfsFailure(
+  err: unknown,
+  action: string,
+  path: string,
+  bytesWritten?: number
+): Error {
+  // How far the write got, when we know it. Compared against the projected size this is
+  // the most direct measure of the real limit -- and when the reported quota disagrees
+  // with that limit, this is the number telling the truth.
+  const got = bytesWritten === undefined ? "" : ` after ${bytesWritten} bytes`
   if (err instanceof DOMException) {
-    return new Error(`${err.name}: ${action} ${path} — ${err.message}`)
+    return new Error(`${err.name}: ${action} ${path}${got} — ${err.message}`)
   }
   return err instanceof Error
     ? err
-    : new Error(`${action} ${path}: ${String(err)}`)
+    : new Error(`${action} ${path}${got}: ${String(err)}`)
 }
 
 export async function writeJson(path: string, value: unknown): Promise<void> {
@@ -177,15 +186,33 @@ export async function openPackedWriter(path: string): Promise<PackedWriter> {
       })
     let bytesWritten = 0
     let target = 0
+
+    // Every call through the handle is annotated, not just the open. Running out of
+    // room happens *during* the writes -- that is where the bytes are -- and the raw
+    // DOMException says only "Failed to execute 'write' on
+    // 'FileSystemSyncAccessHandle': No space available for this operation": no fault
+    // name, and no hint which of a hundred chunk files it was.
+    const guard = <T>(action: string, fn: () => T, written?: number): T => {
+      try {
+        return fn()
+      } catch (err) {
+        throw opfsFailure(err, action, path, written)
+      }
+    }
+
     return {
       write(bytes) {
         const view = asBytes(bytes)
-        handle.write(view, { at: bytesWritten })
+        guard(
+          "writing",
+          () => handle.write(view, { at: bytesWritten }),
+          bytesWritten
+        )
         bytesWritten += view.byteLength
       },
       writeAt(bytes, offset) {
         const view = asBytes(bytes)
-        handle.write(view, { at: offset })
+        guard("writing", () => handle.write(view, { at: offset }))
         bytesWritten = Math.max(bytesWritten, offset + view.byteLength)
       },
       ensureSize(bytes) {
@@ -195,9 +222,15 @@ export async function openPackedWriter(path: string): Promise<PackedWriter> {
         return bytesWritten
       },
       async close() {
-        if (target > bytesWritten) handle.truncate(target)
-        handle.flush()
-        handle.close()
+        // Closed even when flushing fails, or the handle stays locked and every later
+        // attempt on this file fails for a different and more confusing reason.
+        try {
+          if (target > bytesWritten)
+            guard("resizing", () => handle.truncate(target))
+          guard("flushing", () => handle.flush())
+        } finally {
+          handle.close()
+        }
       },
     }
   }

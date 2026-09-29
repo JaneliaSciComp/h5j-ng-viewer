@@ -11,6 +11,8 @@
   color-scheme: dark;
   --bg: #1a1c20;
   --bg-panel: #24272c;
+  /* One step lighter than the bar, for the little box grouping each channel's controls. */
+  --bg-raised: #2e3239;
   --bg-input: #16181b;
   --border: #3a3e44;
   --text: #e4e6eb;
@@ -70,52 +72,17 @@ body {
   font-size: 12px;
 }
 
-/* The file name, elided in the middle. The head is the only thing in the bar allowed to
- * shrink, so it is what absorbs a narrow window; the tail never does. Capped at half the
- * bar so a long name cannot crowd out the controls, which are what the user came for. */
+/* The file name, capped narrow and elided at the end: it only labels the controls to its
+ * right, so it is the first thing to give up width. The full name and source URL are on
+ * hover, and the untruncated name also lives in Settings. */
 .bar-source {
   flex: 0 1 auto;
-  display: flex;
   min-width: 0;
-  max-width: 50%;
-  color: var(--text-dim);
-}
-
-.bar-source-head {
-  flex: 0 1 auto;
-  min-width: 0;
+  max-width: 25%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* flex-shrink 0 is the whole trick: the head runs out of room and ellipsizes while this
-   stays intact, which is middle-elision without measuring any text. */
-.bar-source-tail {
-  flex: 0 0 auto;
-  white-space: nowrap;
-}
-
-/* A checkbox that reads as one control with its label, and does not shrink -- the file
- * name is the only thing in the bar allowed to give up width. */
-.bar-toggle {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 4px;
   color: var(--text-dim);
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.bar-toggle input {
-  margin: 0;
-  cursor: pointer;
-}
-
-.bar-toggle:has(input:disabled) {
-  opacity: 0.5;
-  cursor: default;
 }
 
 /* Storage, hard right. `margin-left: auto` is what separates it and the gear from the
@@ -290,11 +257,13 @@ body {
   flex-direction: column;
   gap: 16px;
 }
-a,
-button,
-input,
-select,
-textarea {
+/* Form-control styling is scoped to our own chrome -- the bar, a dialog, or a popover.
+ * Neuroglancer renders its controls inside `.ng` with its own stylesheet, and a bare
+ * `button {}` / `input {}` rule leaks straight into it: its state editor picked up our
+ * backgrounds and text color and came out unreadable. `:where()` scopes the match without
+ * adding specificity, so these behave exactly as the bare selectors did for our own
+ * elements while never touching the viewer's DOM. */
+:where(.topbar, .dialog, .channel-popover) :is(a, button, input, select, textarea) {
   font: inherit;
   color: inherit;
 }
@@ -304,7 +273,7 @@ textarea {
   outline-offset: 2px;
 }
 
-button {
+:where(.topbar, .dialog, .channel-popover) button {
   background: var(--bg-input);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -312,22 +281,44 @@ button {
   cursor: pointer;
 }
 
-button:hover:not(:disabled) {
+:where(.topbar, .dialog, .channel-popover) button:hover:not(:disabled) {
   border-color: var(--accent);
 }
 
-button:disabled {
+:where(.topbar, .dialog, .channel-popover) button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
-input[type="text"],
-input[type="file"] {
+:where(.topbar, .dialog, .channel-popover)
+  :is(input[type="text"], input[type="file"]) {
   background: var(--bg-input);
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 5px 8px;
   color: var(--text);
+}
+
+/* Neuroglancer's raw-state editor (the `{}` panel) sits on a white overlay and leaves its
+ * Apply/Close/Download buttons near the panel's own color, so they barely read as buttons.
+ * A deliberate override -- the one place we style Neuroglancer's chrome -- gives them a
+ * grey a shade darker than the panel and a black outline. */
+.neuroglancer-state-editor button {
+  background-color: #e0e0e0;
+  color: #000;
+  border: 1px solid #000;
+  border-radius: 3px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.neuroglancer-state-editor button:hover:not(:disabled) {
+  background-color: #cfcfcf;
+}
+
+.neuroglancer-state-editor button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 fieldset {
@@ -342,93 +333,79 @@ legend {
   color: var(--text-dim);
 }
 
-/* SourcePicker */
-/* Channel chips.
+/* Per-channel controls: one group for each channel, laid out inline. Each group is a row
+ * of label + eye + swatch + opacity, with a thin progress bar along its bottom edge while
+ * the channel is still converting -- under the controls rather than beside them, so it
+ * costs no width and does not make the bar taller.
  *
- * Three independent visual channels carry five states: the outline says whether the
- * channel is loaded, the fill says whether it is shown, and a ring outside the chip says
- * it is the one being edited. The ring is outside so it stacks onto hollow and filled
- * alike -- "loaded, hidden, and being edited" is reachable by picking a channel then
- * hiding it, and moving the edit target on the user's behalf would be worse.
+ * `--chip-color` is set per group to the channel's rendering color, which the swatch, the
+ * opacity slider's accent and the progress fill all read.
  *
- * Color is never the only carrier: fill-versus-hollow and dashed-versus-solid are shape
- * cues too. The conversion ring advances with the data rather than animating, so there is
- * no motion for prefers-reduced-motion to suppress.
- */
-.channel-chips {
+ * The strip may shrink and scroll rather than push the storage gauge off the edge: with
+ * many channels the groups can outrun the width, and a scroll is better than an overflow. */
+.channel-strip {
+  display: flex;
+  align-items: center;
+  /* Between the per-channel boxes -- a little more room than the tight gap inside one. */
+  gap: 4px;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+/* A slightly lighter box gathering one channel's controls. Just shorter than the bar, so a
+ * hair of the bar shows above and below it. */
+.channel-group {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 6px;
+  background: var(--bg-raised);
+  border-radius: 4px;
+}
+
+.channel-controls-row {
   display: flex;
   align-items: center;
   gap: 4px;
-  flex: 0 0 auto;
 }
 
-.channel-chip {
-  position: relative;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border-radius: 50%;
-  border: 1.5px solid var(--chip-color, var(--border));
-  background: transparent;
-  color: var(--chip-color, var(--text-dim));
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  line-height: 1;
-  cursor: pointer;
-}
-
-/* Not loaded: dashed and dimmed, and inert. */
-.channel-chip[data-state="queued"],
-.channel-chip[data-state="converting"] {
-  border-style: dashed;
-  border-color: var(--border);
+.channel-label {
   color: var(--text-dim);
-  cursor: default;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
-/* Converting: the same chip, with a ring showing how far along it is. */
-.channel-chip[data-state="converting"]::after {
-  content: "";
+.channel-opacity {
+  width: 64px;
+  accent-color: var(--chip-color, var(--text));
+}
+
+.channel-opacity:disabled {
+  opacity: 0.4;
+}
+
+/* This channel's conversion progress, along the bottom of the group and under the controls
+ * so it can be a few pixels tall without adding to the bar's height. The filled portion is
+ * the channel's own color; the rest is the track, which reads as an empty bar while the
+ * channel is only queued. Advances with the data rather than animating, so there is nothing
+ * for prefers-reduced-motion to suppress. */
+.channel-progress {
   position: absolute;
-  inset: -4px;
-  border-radius: 50%;
-  background: conic-gradient(
-    var(--chip-color, var(--text-dim)) var(--chip-progress, 0%),
-    transparent 0
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4px;
+  /* Bottom corners only, so it hugs the box it sits inside. */
+  border-bottom-left-radius: 4px;
+  border-bottom-right-radius: 4px;
+  background: linear-gradient(
+    to right,
+    var(--chip-color, var(--accent)) var(--progress, 0%),
+    var(--bg-input) 0
   );
-  mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0);
-  -webkit-mask: radial-gradient(
-    farthest-side,
-    transparent calc(100% - 2px),
-    #000 0
-  );
-}
-
-/* Shown: filled with the channel's own rendering color. */
-.channel-chip[data-state="visible"] {
-  background: var(--chip-color, var(--border));
-  color: #000;
-}
-
-/* Being edited, whether shown or hidden. */
-.channel-chip[data-picked="true"] {
-  box-shadow:
-    0 0 0 2px var(--bg-panel),
-    0 0 0 3.5px var(--text);
-}
-
-.channel-chip:focus-visible {
-  outline: 2px solid var(--text);
-  outline-offset: 3px;
-}
-
-/* Eye and swatch: one set of controls, acting on the channel being edited, so the bar's
- * width does not grow with the channel count. */
-.channel-controls {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 0 0 auto;
 }
 
 .icon-button {
@@ -455,6 +432,9 @@ legend {
   cursor: default;
 }
 
+/* One swatch per channel now, so each names its own anchor inline (`--swatch-<i>`) and its
+ * popover anchors to that name. A single shared `anchor-name` would tie every popover to
+ * the same swatch, so channel 0's chooser would open under channel 3's swatch. */
 .swatch-button {
   width: 22px;
   height: 22px;
@@ -462,15 +442,15 @@ legend {
   border: 1.5px solid var(--border);
   border-radius: 4px;
   cursor: pointer;
-  anchor-name: --swatch;
 }
 
 /* Color and opacity popover.
  *
  * `popover` puts this in the top layer, which brings light dismiss and Esc for free but
- * also means it is positioned against the viewport rather than an ancestor. Anchor
- * positioning ties it to the swatch where the browser supports it; the fallback pins it
- * under the right-hand end of the bar, which is where the swatch sits anyway.
+ * also means it is positioned against the viewport rather than an ancestor. Each popover
+ * carries its own `position-anchor` inline, tying it to its channel's swatch where the
+ * browser supports it; the fallback pins it under the right-hand end of the bar. Only one
+ * auto popover is open at a time, so the fallback's fixed spot is unambiguous.
  */
 .channel-popover {
   position: fixed;
@@ -488,7 +468,6 @@ legend {
 
 @supports (anchor-name: --swatch) {
   .channel-popover {
-    position-anchor: --swatch;
     top: anchor(bottom);
     right: anchor(right);
     margin-top: 6px;
@@ -661,40 +640,34 @@ legend {
   font-variant-numeric: tabular-nums;
 }
 
-.bar-opacity {
-  width: 96px;
-  accent-color: var(--chip-color, var(--text));
+/* The Z-slice slider, where the 3D projection controls used to sit. Does not shrink -- it
+ * is both a control and a readout of the current slice, and a squashed range is neither. */
+.slice-slider {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-dim);
+  white-space: nowrap;
 }
 
-.bar-opacity:disabled {
+.slice-label {
+  font-size: 12px;
+}
+
+.slice-range {
+  width: 120px;
+  accent-color: var(--accent);
+}
+
+.slice-range:disabled {
   opacity: 0.4;
 }
 
-.bar-opacity-value {
-  width: 34px;
+.slice-value {
+  width: 30px;
   text-align: right;
   font-variant-numeric: tabular-nums;
-  color: var(--text-dim);
-}
-
-/* Narrower than the opacity slider: it has five stops, not a continuum, so travel past
- * what the steps need would only invite dragging between them. */
-.bar-samples {
-  flex: 0 0 auto;
-  width: 64px;
-  accent-color: var(--text);
-}
-
-.bar-samples:disabled {
-  opacity: 0.4;
-}
-
-.bar-samples-value {
-  flex: 0 0 auto;
-  width: 26px;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-dim);
 }
 .ingest-compact {
   flex: 1 1 auto;
