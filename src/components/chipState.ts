@@ -1,12 +1,12 @@
-// The chips' display logic, kept out of ChannelChips.tsx because a module that exports a
+// A channel's display state, kept out of ChannelStrip.tsx because a module that exports a
 // component must export only components for React Fast Refresh -- the same reason the
 // store's hooks live apart from its provider.
 
 export type ChipState = "queued" | "converting" | "hidden" | "visible"
 
 /**
- * What a chip is showing. Load status and visibility are separate axes, and the
- * edit marker is a third, which is what keeps five states legible in 20 pixels.
+ * What a channel's controls are showing. Load status and visibility are separate axes: a
+ * channel can be converting, or loaded and hidden, or loaded and shown.
  */
 export function chipState(
   index: number,

@@ -36,6 +36,23 @@ export function projectedBytes(state: AppState): number | null {
 }
 
 /**
+ * The zoom to write into the URL, or null to leave it out. A view fitted to its pane on
+ * load carries no zoom -- so a plain reload fits again rather than pinning the fit -- and a
+ * zoom is persisted only once the user moves off that fitted default, or when a shared link
+ * pinned one to begin with (no fit ran, so there is no default to match against).
+ */
+export function zoomToPersist(
+  zoom: number | null,
+  defaultZoom: number | null
+): number | null {
+  if (zoom === null) return null
+  if (defaultZoom === null) return zoom
+  // Relative tolerance: crossSectionScale spans orders of magnitude between volumes, so a
+  // fixed epsilon would be too coarse for one and too fine for another.
+  return Math.abs(zoom - defaultZoom) > defaultZoom * 1e-3 ? zoom : null
+}
+
+/**
  * The channel the bar's eye and swatch act on, with everything a control needs to
  * render, or null when nothing is ready yet and those controls should be disabled.
  *

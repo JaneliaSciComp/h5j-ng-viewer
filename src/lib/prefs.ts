@@ -10,7 +10,7 @@ const STORAGE_KEY = "h5j-ng-viewer.evictionPercent"
  * percentage of the browser's quota.
  *
  * Below 100 on purpose. The quota is a share of one disk that every other site is also
- * drawing on, and a viewer that fills its entire allowance is a bad neighbour even when
+ * drawing on, and a viewer that fills its entire allowance is a bad neighbor even when
  * the browser lets it. Leaving headroom also means a conversion that turns out larger
  * than projected has somewhere to go instead of failing at the last chunk.
  */

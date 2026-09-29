@@ -20,12 +20,10 @@ import {
   visibleIndices,
 } from "@/lib/url"
 import {
-  channelPicked,
   clearFinished,
   colorChanged,
   opacityChanged,
-  volumeRenderingToggled,
-  projectionSamplesChanged,
+  sliceScrubbed,
   launchParsed,
   clearStarted,
   settingsOpened,
@@ -39,7 +37,7 @@ import {
 } from "@/state/actions"
 import { useAppState, useDispatch } from "@/state/context"
 import { initialControls } from "@/state/reducer"
-import { isBusy, pickedChannel, projectedBytes } from "@/state/selectors"
+import { isBusy, projectedBytes, zoomToPersist } from "@/state/selectors"
 import type { DragEvent } from "react"
 import type { LaunchParams } from "@/lib/url"
 import type { H5JInfo } from "@/types"
@@ -55,8 +53,6 @@ export function App() {
 
   const { launch, source, controls, dataset, ingest, storage, ui, camera } =
     state
-  const picked = pickedChannel(state)
-
   // The dataset the viewer currently has mounted, in a ref so the ingest callback sees
   // the live value rather than the one from the render that created it.
   const mountedIdRef = useRef<string | null>(null)
@@ -193,7 +189,7 @@ export function App() {
         return mounted
       } catch {
         // Any failure here means converting instead, which always works. Reuse is an
-        // optimisation, and an optimisation that can break a load is not one.
+        // optimization, and an optimization that can break a load is not one.
         return false
       }
     },
@@ -263,7 +259,11 @@ export function App() {
         channels: visibleIndices(controls.visible),
         colors: controls.colors,
         position: camera.position ?? launch.position,
-        zoom: camera.zoom ?? launch.zoom,
+        // Only a zoom the user chose is worth carrying. On load the view is fitted to its
+        // pane, and that fitted default is left out of the URL so a plain reload fits again
+        // rather than pinning the fit; the moment the user zooms off it, the zoom is saved
+        // and a shared link restores it.
+        zoom: zoomToPersist(camera.zoom, camera.defaultZoom),
       })
       history.replaceState(null, "", `${location.pathname}${search}`)
     }, URL_WRITE_DELAY_MS)
@@ -271,6 +271,7 @@ export function App() {
   }, [
     camera.position,
     camera.zoom,
+    camera.defaultZoom,
     controls.colors,
     controls.visible,
     launch,
@@ -283,24 +284,6 @@ export function App() {
         i === index ? shown === false : shown !== false
       )
       dispatch(visibilityChanged(next))
-    },
-    [controls.visible, dispatch]
-  )
-
-  // Picking also reveals: the eye and swatch are the only reason to pick a channel, and
-  // editing one that cannot be seen is a dead end.
-  const onPick = useCallback(
-    (index: number) => {
-      dispatch(channelPicked(index))
-      if (controls.visible[index] === false) {
-        dispatch(
-          visibilityChanged(
-            controls.visible.map((shown, i) =>
-              i === index ? true : shown !== false
-            )
-          )
-        )
-      }
     },
     [controls.visible, dispatch]
   )
@@ -333,29 +316,24 @@ export function App() {
         visible={controls.visible}
         ready={dataset.ready}
         colors={controls.colors}
+        opacity={controls.opacity}
         convertingIndex={ingest.channelIndex}
         fraction={ingest.fraction}
         phase={ingest.phase}
         phaseDetail={ingest.detail}
         warnings={ingest.warnings}
         error={ingest.error}
-        picked={picked}
-        pickedOpacity={picked ? (controls.opacity[picked.index] ?? 1) : 1}
         sourceName={source.name}
         sourceUrl={source.h5jUrl}
-        volumeRendering={controls.volumeRendering}
-        onVolumeRenderingChange={(on) => dispatch(volumeRenderingToggled(on))}
-        projectionSamples={controls.projectionSamples}
-        onProjectionSamplesChange={(samples) =>
-          dispatch(projectionSamplesChanged(samples))
-        }
+        sliceZ={camera.position ? camera.position[2] : null}
+        sliceDepth={dataset.dims?.size.z ?? null}
+        onScrub={(z) => dispatch(sliceScrubbed(z))}
         usage={storage.usage}
         quota={storage.quota}
         projected={projectedBytes(state)}
         persisted={storage.persisted}
         evictionPercent={storage.evictionPercent}
         onToggleVisibility={onToggleVisibility}
-        onPick={onPick}
         onColorChange={onColorChange}
         onOpacityChange={onOpacityChange}
         onOpenSettings={() => dispatch(settingsOpened(true))}

@@ -261,9 +261,10 @@ export function buildViewerState(opts: {
   const longestAxis = Math.max(size.x, size.y, size.z)
   const projectionScale = longestAxis * 1.5
 
-  // Voxels per pixel, chosen so the largest in-plane slice roughly fits a quadrant of
-  // a 4panel layout rather than opening zoomed into one corner. A launch parameter
-  // wins, so a shared link opens where its author was looking.
+  // Voxels per pixel. A rough guess only: this is built before the viewer mounts, so the
+  // pane's pixel size is unknown here. `ViewerPane` refines it to the actual XY pane on
+  // load so the slice fills its panel. A launch parameter wins over both, so a shared link
+  // opens at the zoom its author chose.
   const crossSectionScale =
     opts.crossSectionScale ?? Math.max(1, Math.max(size.x, size.y) / 512)
 

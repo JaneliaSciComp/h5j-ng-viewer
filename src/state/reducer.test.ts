@@ -3,9 +3,12 @@ import { initialState, reducer } from "@/state/reducer"
 import { isBusy } from "@/state/selectors"
 import type { AppState } from "@/state/reducer"
 import {
+  cameraApplied,
   cameraMoved,
   channelPicked,
   channelReady,
+  sliceScrubbed,
+  viewFitted,
   ingestDetails,
   launchParsed,
   ingestDone,
@@ -230,7 +233,12 @@ describe("ingest progress", () => {
 describe("the camera only ever flows one way", () => {
   it("records where the viewer is looking", () => {
     const state = run([cameraMoved([10, 20, 30], 2.5)])
-    expect(state.camera).toEqual({ position: [10, 20, 30], zoom: 2.5 })
+    expect(state.camera).toEqual({
+      position: [10, 20, 30],
+      zoom: 2.5,
+      pendingPosition: null,
+      defaultZoom: null,
+    })
   })
 
   it("does not touch the rendering controls", () => {
@@ -242,6 +250,63 @@ describe("the camera only ever flows one way", () => {
     ])
     const after = reducer(before, cameraMoved([1, 2, 3], 1))
     expect(after.controls).toBe(before.controls)
+  })
+})
+
+describe("scrubbing the Z slice writes back to the viewer", () => {
+  it("moves only depth, keeping the reported x and y, and queues the move", () => {
+    const state = run([cameraMoved([10, 20, 30], 2.5), sliceScrubbed(88)])
+    // x and y are preserved; only z changes.
+    expect(state.camera.position).toEqual([10, 20, 88])
+    // Queued for the viewer wire to push, so it can be told apart from a snapshot.
+    expect(state.camera.pendingPosition).toEqual([10, 20, 88])
+    expect(state.camera.zoom).toBe(2.5)
+  })
+
+  it("ignores a scrub before the viewer has reported a position", () => {
+    // With no x and y to preserve there is nothing to move relative to, so the scrub is
+    // dropped rather than guessed. The slider is disabled in that window in any case.
+    const state = run([sliceScrubbed(88)])
+    expect(state.camera.position).toBeNull()
+    expect(state.camera.pendingPosition).toBeNull()
+  })
+
+  it("clears the pending position once the wire has applied it", () => {
+    const state = run([
+      cameraMoved([10, 20, 30], 2.5),
+      sliceScrubbed(88),
+      cameraApplied(),
+    ])
+    expect(state.camera.pendingPosition).toBeNull()
+    // The applied position stays put -- only the pending marker is cleared.
+    expect(state.camera.position).toEqual([10, 20, 88])
+  })
+
+  it("keeps a pending scrub across an interleaved snapshot", () => {
+    // A snapshot arriving between the scrub and its apply must not clear the pending move;
+    // otherwise a concurrent pan would swallow the scrub before the wire pushed it.
+    const state = run([
+      cameraMoved([10, 20, 30], 2.5),
+      sliceScrubbed(88),
+      cameraMoved([11, 21, 30], 2.5),
+    ])
+    expect(state.camera.pendingPosition).toEqual([10, 20, 88])
+  })
+})
+
+describe("fitting the view to its pane records the default zoom", () => {
+  it("adopts the fitted scale as both the zoom and the default", () => {
+    const state = run([viewFitted(1.4)])
+    expect(state.camera.zoom).toBe(1.4)
+    expect(state.camera.defaultZoom).toBe(1.4)
+  })
+
+  it("survives a later camera move, so the default stays comparable", () => {
+    // The user zooms after the fit: `zoom` moves off the default, but the default itself is
+    // retained so the URL writer can still tell they are different.
+    const state = run([viewFitted(1.4), cameraMoved([1, 2, 3], 3.2)])
+    expect(state.camera.zoom).toBe(3.2)
+    expect(state.camera.defaultZoom).toBe(1.4)
   })
 })
 

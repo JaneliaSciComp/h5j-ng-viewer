@@ -107,6 +107,20 @@ export interface AppState {
   camera: {
     position: [number, number, number] | null
     zoom: number | null
+    /**
+     * A position the Z-slice slider asked for, waiting to be pushed to the live viewer.
+     * Set only by `SLICE_SCRUBBED` and cleared by `CAMERA_APPLIED`, so it is the one
+     * signal that says "this move came from us" -- a snapshot-driven `CAMERA_MOVED` never
+     * sets it, which is what keeps the read and write camera paths from looping.
+     */
+    pendingPosition: [number, number, number] | null
+    /**
+     * The scale at which the current view was fitted to its pane on load, or null when no
+     * fit has happened (a shared link pinned a zoom, so the fit was skipped). The URL
+     * writer compares `zoom` against this to tell an untouched default from a chosen zoom,
+     * and persists only the latter.
+     */
+    defaultZoom: number | null
   }
 
   ui: {
@@ -156,7 +170,12 @@ export const initialState: AppState = {
     clearing: false,
     evictionPercent: loadEvictionPercent(),
   },
-  camera: { position: null, zoom: null },
+  camera: {
+    position: null,
+    zoom: null,
+    pendingPosition: null,
+    defaultZoom: null,
+  },
   ui: { settingsOpen: false, pickedChannel: null },
 }
 
@@ -452,9 +471,49 @@ export function reducer(state: AppState, action: Action): AppState {
       }
 
     case C.CAMERA_MOVED:
+      // Preserves `pendingPosition`: a snapshot from the viewer must not clear a scrub the
+      // wire has not applied yet. `CAMERA_APPLIED` is what clears it, right after the push.
       return {
         ...state,
-        camera: { position: action.position, zoom: action.zoom },
+        camera: {
+          ...state.camera,
+          position: action.position,
+          zoom: action.zoom,
+        },
+      }
+
+    case C.SLICE_SCRUBBED: {
+      // Only depth moves, so the current x and y are kept. Before the viewer has reported
+      // a position there is nothing to keep, so the scrub is dropped rather than guessed --
+      // the slider is disabled in that window, so this is belt and braces.
+      const current = state.camera.position
+      if (!current) return state
+      const next: [number, number, number] = [current[0], current[1], action.z]
+      // Set optimistically as well as queued, so the slider tracks the drag rather than
+      // waiting for the round-trip out to Neuroglancer and back through a snapshot.
+      return {
+        ...state,
+        camera: { ...state.camera, position: next, pendingPosition: next },
+      }
+    }
+
+    case C.CAMERA_APPLIED:
+      return {
+        ...state,
+        camera: { ...state.camera, pendingPosition: null },
+      }
+
+    case C.VIEW_FITTED:
+      // Records the fitted scale and adopts it as the current zoom in the same step, so
+      // there is no window where the stale zoom looks like a deliberate one to the URL
+      // writer before the viewer's own snapshot catches up.
+      return {
+        ...state,
+        camera: {
+          ...state.camera,
+          zoom: action.zoom,
+          defaultZoom: action.zoom,
+        },
       }
 
     case C.EVICTION_PERCENT_CHANGED:

@@ -77,13 +77,13 @@ export default defineConfig({
     esbuildOptions: { define: shims },
   },
   worker: { format: "es" },
-  // strictPort matters more here than in a typical app: the service worker
+  // `strictPort` matters more here than in a typical app: the service worker
   // registration, its OPFS contents and any cached Neuroglancer state are all keyed to
   // the origin. Silently drifting to :3001 when :3000 is taken would leave a stale
   // registration serving one port while the page runs on another.
-  server: { port: 3000, strictPort: true, headers: crossOriginIsolation },
-  preview: { port: 3000, strictPort: true, headers: crossOriginIsolation },
-  test: {
+  // The `host: true` is necessary for publishing ports when running in a dev container.
+  server: { port: 3000, strictPort: true, host: true, headers: crossOriginIsolation },
+  preview: { port: 3000, strictPort: true, host: true, headers: crossOriginIsolation },  test: {
     environment: "node",
     include: ["src/**/*.test.ts"],
   },

@@ -2,14 +2,13 @@ import type { ReactElement } from "react"
 import type { Phase } from "@/state/actions"
 
 /**
- * The conversion readout: a percentage while a channel is being converted, nothing at
- * all when everything is loaded. A percentage rather than a bar, because a bar wide
- * enough to read would cost more of a 32px bar than it earns -- and the converting
- * chip already carries the same number as a ring, so this text never has to say which
- * channel it belongs to.
+ * The readout for work that belongs to no single channel -- fetching the container,
+ * decoding, reclaiming space -- plus errors and warnings. Per-channel conversion has its
+ * own progress bar under each channel's controls, so this stays quiet while a specific
+ * channel is converting and only speaks for the phases that precede one.
  *
- * Errors and warnings take the same slot, since they are mutually exclusive with
- * progress in practice and neither deserves permanent width.
+ * Errors and warnings share the slot, since they are mutually exclusive with progress in
+ * practice and neither deserves permanent width in a 32px bar.
  */
 
 const PHASE_LABELS: Record<Phase, string> = {
@@ -33,12 +32,21 @@ export function ProgressText(props: {
    * take longest were the two that said least about what they were doing.
    */
   detail?: string
+  /**
+   * Which channel is converting right now, or null between channels. When a channel owns
+   * the work, its own progress bar shows it and this readout stays silent -- so the global
+   * percentage only appears for the phases that run before any channel does.
+   */
+  channelIndex: number | null
   warnings: string[]
   error: string | null
   /** Opens the place where the full text lives. */
   onShowDetails: () => void
 }): ReactElement | null {
-  const busy = props.phase !== "idle" && props.phase !== "done"
+  const busy =
+    props.phase !== "idle" &&
+    props.phase !== "done" &&
+    props.channelIndex === null
 
   if (props.error) {
     return (

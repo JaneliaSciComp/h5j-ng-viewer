@@ -48,6 +48,8 @@ export const SWATCHES = [
 
 export function ChannelPopover(props: {
   id: string
+  /** The swatch's anchor name, so the popover opens under the swatch that owns it. */
+  anchorName: string
   channelName: string
   color: string
   onColorChange: (color: string) => void
@@ -57,6 +59,7 @@ export function ChannelPopover(props: {
       id={props.id}
       popover="auto"
       className="channel-popover"
+      style={{ positionAnchor: props.anchorName }}
       aria-label={`Color for ${props.channelName}`}
     >
       <div className="popover-header">

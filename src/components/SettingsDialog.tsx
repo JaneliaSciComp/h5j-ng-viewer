@@ -44,6 +44,7 @@ export function SettingsDialog(props: {
   // A second dialog on top of this one would be worse than a button that changes its
   // mind for a moment.
   const [confirming, setConfirming] = useState(false)
+  const [copied, setCopied] = useState(false)
 
   const remaining = props.quota - props.usage
   const overQuota = props.projected !== null && props.projected > remaining
@@ -68,6 +69,30 @@ export function SettingsDialog(props: {
           <p className="settings-error" role="alert">
             {props.error}
           </p>
+          {/* So a report arrives as text rather than a screenshot. Every question that
+              followed the last one -- which browser, how full was storage, was it a
+              private window -- is answered by this block, and none of it survives a
+              photograph of a dialog. */}
+          <button
+            type="button"
+            onClick={() => {
+              void navigator.clipboard.writeText(
+                [
+                  `error: ${props.error}`,
+                  props.sourceUrl ? `source: ${props.sourceUrl}` : "",
+                  ...props.diagnostics,
+                  ...props.warnings.map((w) => `warning: ${w}`),
+                ]
+                  .filter(Boolean)
+                  .join("\n")
+              )
+              setCopied(true)
+            }}
+            title="Copy the error and everything known about this browser, for a bug report"
+            aria-label="Copy diagnostics for a bug report"
+          >
+            {copied ? "Copied" : "Copy diagnostics"}
+          </button>
         </section>
       ) : null}
 

@@ -9,7 +9,12 @@ import {
 } from "@/state/actions"
 import type { Action } from "@/state/actions"
 import { ingestDims, viewerReady } from "@/state/actions"
-import { layerDataset, pickedChannel, projectedBytes } from "@/state/selectors"
+import {
+  layerDataset,
+  pickedChannel,
+  projectedBytes,
+  zoomToPersist,
+} from "@/state/selectors"
 import type { H5JInfo, ResolvedDims } from "@/types"
 
 function run(actions: Action[], from: AppState = initialState): AppState {
@@ -37,8 +42,8 @@ describe("pickedChannel", () => {
       index: 1,
       name: "Channel_1",
       visible: true,
-      // The default palette, indexed by the channel's own position.
-      color: "#4294ff",
+      // Two-channel stacks default to magenta/green, so channel 1 is green.
+      color: "#00ff00",
     })
   })
 
@@ -139,5 +144,25 @@ describe("layerDataset", () => {
       "Channel_0",
       "Channel_1",
     ])
+  })
+})
+
+describe("zoomToPersist keeps the fitted default out of the URL", () => {
+  it("writes nothing before the viewer has reported a zoom", () => {
+    expect(zoomToPersist(null, null)).toBeNull()
+  })
+
+  it("omits a zoom still sitting on the fitted default", () => {
+    expect(zoomToPersist(1.4, 1.4)).toBeNull()
+  })
+
+  it("persists a zoom the user has moved off the default", () => {
+    expect(zoomToPersist(3.2, 1.4)).toBe(3.2)
+  })
+
+  it("persists a pinned zoom when no fit ran to set a default", () => {
+    // A shared link pinned a zoom, so the fit was skipped and there is no default; the
+    // zoom is the user's and must survive the round-trip.
+    expect(zoomToPersist(2.0, null)).toBe(2.0)
   })
 })

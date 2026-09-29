@@ -6,7 +6,7 @@ import {
 } from "@janelia/react-neuroglancer"
 import type { NeuroglancerViewerInstance } from "@janelia/react-neuroglancer"
 import { appliesToLiveLayer, buildLayer } from "@/lib/ngstate"
-import { cameraMoved } from "@/state/actions"
+import { cameraApplied, cameraMoved, viewFitted } from "@/state/actions"
 import { useAppState, useDispatch } from "@/state/context"
 import { layerDataset } from "@/state/selectors"
 
@@ -56,8 +56,9 @@ function ViewerSync(props: {
 }): null {
   const state = useAppState()
   const dispatch = useDispatch()
-  // Only the snapshot is used now. Nothing pushes whole state any more: every change
-  // lands on a live layer, which is what keeps the coordinate space intact.
+  // Only the snapshot comes from the wrapper. Layer changes land on live layers, and the
+  // Z-slice scrub goes back through `viewer.state.restoreState` below -- not the wrapper's
+  // `setState`, which rebuilds the coordinate space and drops the view into a corner.
   const { snapshot } = useNeuroglancer(props.viewer)
 
   const { controls, dataset } = state
@@ -67,6 +68,10 @@ function ViewerSync(props: {
   // an unrelated render cannot cause a redundant update -- and so the layers already
   // inside `initialState` are not immediately pushed back on mount.
   const lastPushed = useRef<Array<Record<string, unknown>> | null>(null)
+
+  // The dataset the cross-section has already been fitted for, so the fit happens once per
+  // load and never fights the user's own zooming afterwards.
+  const fittedFor = useRef<string | null>(null)
 
   useEffect(() => {
     // Seeded from the very state Neuroglancer parsed, not guessed. Assuming instead that
@@ -163,7 +168,75 @@ function ViewerSync(props: {
     )
   }, [dispatch, snapshot])
 
+  // The one place a control reaches the viewer's pose. Driven by `pendingPosition`, which
+  // only the Z-slice slider sets, so this never fires in reaction to the viewer's own
+  // movement -- the snapshot effect above reads that, and reading is all it does.
+  //
+  // `viewer.state.restoreState` is a PARTIAL restore: it only touches the keys the object
+  // carries, so passing `{ position }` moves the camera and leaves `dimensions`, the layers
+  // and the scales exactly as they were. The wrapper's `setState` does not -- it rebuilds
+  // the coordinate space, which returns without dimensions and collapses the view into a
+  // corner, dead to further input. This is the documented way to move a live viewer.
+  const { pendingPosition } = state.camera
+  useEffect(() => {
+    if (!pendingPosition) return
+    try {
+      props.viewer.state.restoreState({ position: pendingPosition })
+    } finally {
+      // Cleared whether or not the push took, so a rejected apply cannot wedge the slider
+      // with a pending position that is retried on every render.
+      dispatch(cameraApplied())
+    }
+  }, [pendingPosition, props.viewer, dispatch])
+
+  // On load, open the XY cross-section fitted to its pane rather than at a fixed guess, so
+  // the slice fills the panel devoted to it. Done here, not in `buildViewerState`, because
+  // only the mounted DOM knows the pane's pixel size; through the same partial restore as
+  // the scrub, so it moves only the scale. Skipped when the launch URL pins a zoom -- a
+  // shared link is entitled to keep the view its author chose -- and run once per dataset.
+  useEffect(() => {
+    if (!dataset.id || !dataset.dims) return
+    if (fittedFor.current === dataset.id) return
+    if (state.launch.zoom != null) {
+      fittedFor.current = dataset.id
+      return
+    }
+    const scale = fitCrossSectionScale(dataset.dims.size)
+    if (scale === null) return // pane not measurable yet; retried on the next render
+    fittedFor.current = dataset.id
+    try {
+      props.viewer.state.restoreState({ crossSectionScale: scale })
+      // Recorded as the default so the URL writer leaves zoom out until the user moves off
+      // it. restoreState alone would not tell it apart from a zoom the user chose.
+      dispatch(viewFitted(scale))
+    } catch {
+      // A viewer that will not take a partial restore keeps its built-in scale; the slice
+      // is merely at a less ideal zoom, which is not worth surfacing.
+    }
+  }, [dataset.id, dataset.dims, state.launch.zoom, props.viewer, dispatch])
+
   return null
+}
+
+/**
+ * The `crossSectionScale` -- voxels per pixel -- at which the whole in-plane slice just
+ * fits the XY pane. The default layout is 4panel, so that pane is about half the viewer
+ * area each way; a small margin keeps the slice clear of the panel borders rather than
+ * clipped by them. Null when the pane cannot be measured yet, so the caller retries.
+ */
+const PANE_FIT_MARGIN = 0.96
+
+function fitCrossSectionScale(size: { x: number; y: number }): number | null {
+  // The viewer area, or the window if it has not been laid out yet -- so a zero measurement
+  // does not leave the fit permanently unrun, since the effect will not retry on its own.
+  const rect = document.querySelector(".viewer-area")?.getBoundingClientRect()
+  const areaWidth = rect && rect.width > 0 ? rect.width : window.innerWidth
+  const areaHeight = rect && rect.height > 0 ? rect.height : window.innerHeight
+  const paneWidth = (areaWidth / 2) * PANE_FIT_MARGIN
+  const paneHeight = (areaHeight / 2) * PANE_FIT_MARGIN
+  if (paneWidth <= 0 || paneHeight <= 0) return null
+  const scale = Math.max(size.x / paneWidth, size.y / paneHeight)
+  return Number.isFinite(scale) && scale > 0 ? scale : null
 }
 
 /** The layers inside a viewer state JSON string, or null if there is no reading it. */
