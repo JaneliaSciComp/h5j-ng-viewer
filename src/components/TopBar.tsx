@@ -33,6 +33,8 @@ export function TopBar(props: {
   /** The file's name, and where it came from -- null for a dropped local file. */
   sourceName: string
   sourceUrl: string | null
+  /** The launch `title`, shown in place of the file name; null to show the name. */
+  sourceTitle: string | null
   /** Current Z voxel index, or null before the viewer has reported a position. */
   sliceZ: number | null
   /** Depth of the volume in voxels, or null before dims are known. */
@@ -53,7 +55,11 @@ export function TopBar(props: {
 
   return (
     <header className="topbar">
-      <SourceName name={props.sourceName} url={props.sourceUrl} />
+      <SourceName
+        name={props.sourceName}
+        url={props.sourceUrl}
+        title={props.sourceTitle}
+      />
 
       <ProgressText
         phase={props.phase}

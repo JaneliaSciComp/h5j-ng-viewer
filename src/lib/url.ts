@@ -10,6 +10,7 @@
 //   &col=ff00ff,00ff00           per-channel color, no leading '#'
 //   &pos=605,283,87              voxel position, i.e. which slice to start on
 //   &zoom=1                      voxels per screen pixel in the cross-section views
+//   &title=Some%20text           shown in the bar in place of the file name
 //
 // Everything except `h5j` is optional, and anything unrecognized is ignored: a link
 // from an older or newer build must never fail to load, it must just lose a detail.
@@ -29,6 +30,12 @@ export interface LaunchParams {
   position: [number, number, number] | null
   /** Initial cross-section scale in voxels per pixel, or null for the default. */
   zoom: number | null
+  /**
+   * Text to show in the bar instead of the file name, or null to show the file name.
+   * For a caller whose file names are opaque -- a hash, a sample ID -- and who knows a
+   * better label for what is being opened.
+   */
+  title: string | null
 }
 
 export const NO_PARAMS: LaunchParams = {
@@ -37,6 +44,7 @@ export const NO_PARAMS: LaunchParams = {
   colors: null,
   position: null,
   zoom: null,
+  title: null,
 }
 
 export function parseParams(search: string): LaunchParams {
@@ -47,6 +55,8 @@ export function parseParams(search: string): LaunchParams {
     colors: parseColors(params.get("col")),
     position: parsePosition(params.get("pos")),
     zoom: parseZoom(params.get("zoom")),
+    // Blank or all-whitespace is treated as absent, so `&title=` cannot blank the label.
+    title: params.get("title")?.trim() || null,
   }
 }
 
@@ -68,6 +78,7 @@ export function serializeParams(launch: LaunchParams): string {
   }
   if (launch.position) params.set("pos", launch.position.join(","))
   if (launch.zoom !== null) params.set("zoom", String(launch.zoom))
+  if (launch.title) params.set("title", launch.title)
   return `?${params.toString()}`
 }
 

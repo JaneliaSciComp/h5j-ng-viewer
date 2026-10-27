@@ -67,6 +67,13 @@ describe("parseParams", () => {
     expect(parseParams("?h5j=x&zoom=0").zoom).toBeNull()
     expect(parseParams("?h5j=x&zoom=-1").zoom).toBeNull()
   })
+
+  it("reads a title, and treats a blank one as absent", () => {
+    expect(parseParams("?h5j=x&title=My%20stack").title).toBe("My stack")
+    expect(parseParams("?h5j=x&title=").title).toBeNull()
+    expect(parseParams("?h5j=x&title=%20%20").title).toBeNull()
+    expect(parseParams("?h5j=x").title).toBeNull()
+  })
 })
 
 describe("serializeParams", () => {
@@ -76,6 +83,7 @@ describe("serializeParams", () => {
     colors: ["#ff00ff", null, "#00ff00"],
     position: [605, 283, 87],
     zoom: 1,
+    title: "Brain & VNC, sample #3",
   }
 
   it("round-trips every parameter", () => {
