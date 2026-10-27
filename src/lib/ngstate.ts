@@ -287,5 +287,13 @@ export function buildViewerState(opts: {
     layout: "4panel",
     crossSectionScale,
     projectionScale,
+    // Open Neuroglancer's tool palette showing every control (the "+" query matches all
+    // tools), so the per-layer controls are on screen without hunting through menus.
+    toolPalettes: {
+      "All controls": {
+        row: 1,
+        query: "+",
+      },
+    },
   }
 }

@@ -5,8 +5,16 @@ import {
   useNeuroglancer,
 } from "@janelia/react-neuroglancer"
 import type { NeuroglancerViewerInstance } from "@janelia/react-neuroglancer"
+import { parseHex, rgbToHex } from "@/lib/color"
 import { appliesToLiveLayer, buildLayer } from "@/lib/ngstate"
-import { cameraApplied, cameraMoved, viewFitted } from "@/state/actions"
+import {
+  cameraApplied,
+  cameraMoved,
+  colorChanged,
+  opacityChanged,
+  viewFitted,
+  visibilityChanged,
+} from "@/state/actions"
 import { useAppState, useDispatch } from "@/state/context"
 import { layerDataset } from "@/state/selectors"
 
@@ -168,6 +176,88 @@ function ViewerSync(props: {
     )
   }, [dispatch, snapshot])
 
+  // The current controls and dataset, for the read-back below. Held in a ref so that
+  // effect can depend on the snapshot alone (see there for why).
+  const latest = useRef({ controls, layerTarget })
+  useEffect(() => {
+    latest.current = { controls, layerTarget }
+  })
+
+  // Color, visibility and opacity changed in Neuroglancer's own panels (the "All controls"
+  // palette, the layer bar, the rendering tab) have to reach the store, or the bar keeps
+  // showing stale values -- and its next push would put the old ones back.
+  //
+  // Runs only when the snapshot changes. If it also ran when the controls changed, a
+  // change made in the bar would be compared against the snapshot from BEFORE that change
+  // reached Neuroglancer, look like a change made inside Neuroglancer, and be reverted.
+  //
+  // Layers are matched by name rather than position, so a reordered layer list cannot
+  // edit the wrong channel. `lastPushed` is brought up to date before dispatching, so the
+  // push effect sees nothing new and stays quiet; otherwise it would push the value
+  // straight back, and a shader-control push resets every control at once -- undoing,
+  // say, a contrast the user had just set in the same panel.
+  useEffect(() => {
+    const { controls: current, layerTarget: target } = latest.current
+    const layers = (snapshot.raw ?? {}).layers
+    if (!Array.isArray(layers) || !target) return
+
+    let visible: boolean[] | null = null
+    target.channelNames.forEach((name, channel) => {
+      const layer = layers.find(
+        (candidate: unknown) =>
+          (candidate as { name?: unknown } | null)?.name === name
+      ) as LayerJson | undefined
+      if (!layer) return
+      const pushed = lastPushed.current?.[channel]
+      const remember = (fields: Record<string, unknown>) => {
+        if (pushed && lastPushed.current) {
+          lastPushed.current[channel] = { ...lastPushed.current[channel], ...fields }
+        }
+      }
+
+      const rgb =
+        typeof layer.shaderControls?.hue === "string"
+          ? parseHex(layer.shaderControls.hue)
+          : null
+      if (rgb) {
+        const color = rgbToHex(...rgb)
+        if (color !== current.colors[channel]?.toLowerCase()) {
+          remember({
+            shaderControls: {
+              ...(pushed?.shaderControls as Record<string, unknown>),
+              hue: color,
+            },
+          })
+          dispatch(colorChanged(channel, color))
+        }
+      }
+
+      // Only for a channel whose data is ready. A channel still converting is hidden in
+      // Neuroglancer on purpose, whatever the user asked for, and reading that back would
+      // turn off a channel the user wants to see the moment it lands. Neuroglancer omits
+      // `visible` from a shown layer's JSON, so absent means shown.
+      if (target.ready[channel]) {
+        const shown = layer.visible !== false
+        if (shown !== (current.visible[channel] !== false)) {
+          visible ??= current.visible.map((value) => value !== false)
+          visible[channel] = shown
+          remember({ visible: shown })
+        }
+      }
+
+      // Skipped when absent rather than guessed: Neuroglancer's own default is 0.5, and
+      // adopting that would halve a channel the user never touched.
+      if (typeof layer.opacity === "number") {
+        const known = current.opacity[channel] ?? 1
+        if (Math.abs(layer.opacity - known) > 1e-6) {
+          remember({ opacity: layer.opacity })
+          dispatch(opacityChanged(channel, layer.opacity))
+        }
+      }
+    })
+    if (visible) dispatch(visibilityChanged(visible))
+  }, [snapshot, dispatch])
+
   // The one place a control reaches the viewer's pose. Driven by `pendingPosition`, which
   // only the Z-slice slider sets, so this never fires in reaction to the viewer's own
   // movement -- the snapshot effect above reads that, and reading is all it does.
@@ -272,6 +362,14 @@ function managedLayer(
     viewer as { layerManager?: { managedLayers?: ManagedLayer[] } }
   ).layerManager?.managedLayers
   return layers?.[channel] ?? null
+}
+
+/** The parts of one layer's state JSON, as Neuroglancer reports it, that the bar mirrors. */
+interface LayerJson {
+  name?: unknown
+  visible?: unknown
+  opacity?: unknown
+  shaderControls?: { hue?: unknown }
 }
 
 interface ManagedLayer {

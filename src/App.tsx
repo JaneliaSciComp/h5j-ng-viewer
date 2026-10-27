@@ -325,6 +325,7 @@ export function App() {
         error={ingest.error}
         sourceName={source.name}
         sourceUrl={source.h5jUrl}
+        sourceTitle={launch.title}
         sliceZ={camera.position ? camera.position[2] : null}
         sliceDepth={dataset.dims?.size.z ?? null}
         onScrub={(z) => dispatch(sliceScrubbed(z))}

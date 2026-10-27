@@ -55,48 +55,54 @@ https://<host>/?h5j=<url-encoded H5J URL>&chs=0,1
 | `col`     | Per-channel color override as `#rrggbb`, positional                            |
 | `pos`     | Initial voxel position                                                          |
 | `zoom`    | Initial cross-section scale, in voxels per pixel                                |
+| `title`   | Text shown in the bar in place of the file name (the file name stays on hover)  |
 
-`pos` and `zoom` are written back as you navigate, so a reload or a copied link reopens
-the same view. Dragging a local `.h5j` onto the viewer also works, but a dropped file has
-no URL, so that session is not shareable.
+`pos` is written back as you navigate, so a reload or a copied link reopens the same
+place. `zoom` is written back only once you zoom yourself: on load the XY view is fitted
+to its pane, and an untouched fit is left out of the address bar so a plain reload fits
+again. A link that carries `zoom` opens at that zoom instead of fitting.
+
+Dragging a local `.h5j` onto the viewer also works, but a dropped file has no URL, so
+that session is not shareable.
 
 ### The bar, left to right
 
-**File name**, middle-elided so both the identifying front and the extension survive.
-Hover for the full name and source URL.
+**File name** (or the `title` parameter, when given), elided at the end and given at most
+a quarter of the bar, so the channel controls keep their room. Hover for the full name and
+source URL.
 
-**One chip per channel**, labeled with its index. Three independent visual channels
-carry five states, so load status, visibility and edit target never compete for the same
-cue:
+**Conversion readout**: the phase and percentage of work that belongs to no single
+channel (fetching the file, reclaiming storage), and afterwards a warning count if
+anything was worth flagging. Click it to open the details. It stays empty while a channel
+converts, because each channel shows its own progress.
 
-| Chip                                  | Meaning                                      |
-| ------------------------------------- | -------------------------------------------- |
-| Dashed, dimmed                        | queued for conversion; inert                 |
-| Dashed, with a filling ring around it | converting now, the ring showing progress    |
-| Solid outline in the channel's color | converted, hidden                            |
-| Filled with the channel's color      | converted, visible                           |
-| Any of the above, plus an outer ring  | the channel the controls to the right act on |
+**One box per channel**, each holding that channel's own controls, so every control sits
+under the channel it acts on:
 
-Color is never the only indicator: filled-versus-hollow and dashed-versus-solid are shape
-cues too. The conversion ring advances with the data rather than animating, so there is
-nothing for `prefers-reduced-motion` to suppress.
+- **`Ch N`**, the channel's 0-based index, matching `chs` and the container's own
+  `Channel_N` names.
+- **Eye**: shows or hides the channel.
+- **Color swatch**: opens a color panel with eight presets from the Turbo colormap, then a
+  full picker (saturation/value square, hue slider, RGB sliders, hex field), so a custom
+  color is one click away rather than behind a browser dialog.
+- **Opacity slider**.
 
-Left-click toggles visibility, right-click picks the channel to edit, the same
-convention as Neuroglancer's own layer panel. Every chip's tooltip names what the next
-click will do rather than describing the control.
+A channel that has not finished converting keeps its box, with its controls disabled and
+a progress bar along the bottom that fills as it converts; channels waiting their turn
+show an empty bar. The bar advances with the data rather than animating, so there is
+nothing for `prefers-reduced-motion` to suppress. Tooltips on a disabled control say how
+far that channel has got.
 
-**Conversion readout**: phase and percentage while a channel converts; afterwards, a
-warning count if anything was worth flagging. Click it to open the details.
+Default colors are magenta and green for a two-channel file, and colors from the Turbo
+palette otherwise; `col` overrides either.
 
-**Eye, opacity slider, color swatch**: these act on the picked channel. The swatch
-opens a color panel: eight presets from the Turbo colormap, then a full picker
-(saturation/value square, hue slider, RGB sliders, hex field) so a custom color is one
-click away rather than behind a browser dialog.
+**Z slider**: shows which slice the cross-section views are on, and moves through them,
+the same as the mouse wheel over the XY view. Only depth changes; the in-plane position
+and the zoom stay where they are.
 
-**3D checkbox and detail slider**: turns the 3D panel from three intersecting section
-planes into a maximum-intensity projection of the volume, which is what Fiji's 3D
-projection shows. Off by default because it raycasts. The slider sets how finely the
-projection samples: left is cheapest, right is finer and costs proportionally more.
+**Memory**: how full the browser's storage is, with a hatched segment for what the
+conversion in flight still needs and a mark where old volumes start being discarded.
+Hover for the figures.
 
 **Gear**: source URL, storage used and available, "delete all cached data", and the
 per-channel intensity measurements and post-conversion probe results.
@@ -104,6 +110,10 @@ per-channel intensity measurements and post-conversion probe results.
 Every control applies immediately and there is nothing to confirm. Changes are surgical:
 they reach the live Neuroglancer layer through its own accessors, so adjusting a color
 or hiding a channel never moves the camera.
+
+The bar and Neuroglancer stay in step in both directions. Neuroglancer opens with its
+**All controls** tool palette showing, and a channel's color, visibility or opacity
+changed there (or in its layer panel) is reflected in the bar straight away.
 
 ### One array per channel, one layer per channel
 
@@ -147,24 +157,40 @@ src/state/     constants.ts  actions.ts  reducer.ts  selectors.ts  store.tsx  co
 The reducer is a pure function of `(state, action)`. That is worth stating because the
 alternative is common and costly: a reducer that reads or writes anything outside its
 arguments makes state changes order-dependent and undo intractable. `state.controls` is
-the single source of truth every layer is derived from, so a late-arriving c ontrast
+the single source of truth every layer is derived from, so a late-arriving contrast
 measurement is _folded into_ it rather than rebuilt around it; rebuilding would discard
 whatever the user changed meanwhile.
 
-`ViewerPane` connects the store to the mounted viewer with two wires that run in opposite
-directions and never meet:
+`ViewerPane` connects the store to the mounted viewer:
 
 ```
-controls  ──> buildLayer ──> live layer accessors      what the user changes in the bar
-camera    ──> snapshot   ──> store ──> address bar     where the user has navigated to
+controls  ──> buildLayer ──> live layer accessors        what the user changes in the bar
+snapshot  ──> color, visibility, opacity ──> controls    what the user changes in Neuroglancer
+snapshot  ──> camera ──> address bar                     where the user has navigated to
+Z slider  ──> camera ──> viewer.state.restoreState       a slice chosen from the bar
 ```
 
-Keeping each one-way is what prevents a feedback loop: the push reacts to `controls`,
-which the snapshot never writes, and the pull reacts to the snapshot, which the push
-never reads.
+Two rules keep these from feeding back into each other:
 
-Nothing pushes whole viewer state after mount. Every change is applied to the layer
-Neuroglancer already has, through the accessor for that specific property —
+- **The read-back runs only when the snapshot changes**, never when the controls do. Run
+  on a control change, it would compare the bar's new value against a snapshot taken
+  before that value reached Neuroglancer, and revert it.
+- **Every value read back is recorded as already pushed**, so the push sees nothing new
+  and does not send it straight back. That matters beyond tidiness: a shader-control push
+  restores every control at once, so an echoed color would also undo a contrast just set
+  in the same Neuroglancer panel.
+
+The Z slider sets a pending position that only it writes, and that is cleared once
+applied, so a camera snapshot can never be mistaken for a scrub.
+
+Nothing pushes whole viewer state after mount. Camera changes go through
+`viewer.state.restoreState`, which is a _partial_ restore: it only touches the keys it is
+given, so `{ position }` or `{ crossSectionScale }` moves the camera and leaves the layers
+and the coordinate space alone. The wrapper's own `setState` is not used for this; it
+rebuilds the coordinate space.
+
+Layer changes work the same way: each is applied to the layer Neuroglancer already has,
+through the accessor for that specific property —
 `setVisible`, `opacity.value`, `shaderControlState.restoreState`,
 `volumeRenderingMode.restoreState`. This is not a micro-optimization: replacing a layer
 makes Neuroglancer re-resolve its data source and rebuild the coordinate space, which
