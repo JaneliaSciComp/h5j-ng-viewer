@@ -1,10 +1,11 @@
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   applyColorOverrides,
   contrastRanges,
   conversionOrder,
   describeGeometry,
   makeDatasetId,
+  sourceKey,
 } from "@/lib/ingest"
 import type { ChannelStats } from "@/lib/stats"
 
@@ -130,5 +131,45 @@ describe("makeDatasetId", () => {
     for (const name of ["...", "..h5j", ".h5j", "---", "._-"]) {
       expect(makeDatasetId(name, "x")).toMatch(/^volume-/)
     }
+  })
+})
+
+describe("sourceKey", () => {
+  const URL = "https://x/data/stack.h5j"
+  const head = (headers: Record<string, string>) =>
+    vi.fn(async () => new Response(null, { status: 200, headers }))
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it("gives the same id every time for an unchanged file", async () => {
+    // The regression this pins: the reuse check and the conversion derived the id
+    // separately, from different inputs, so a reload never found the volume it had just
+    // converted. Both now take it from here, so it only has to be stable.
+    vi.stubGlobal("fetch", head({ "content-length": "123", "last-modified": "Mon" }))
+    const first = await sourceKey(URL)
+    const second = await sourceKey(URL)
+    expect(second).toEqual(first)
+    expect(first.name).toBe("stack.h5j")
+  })
+
+  it("gives a new id when the file at the URL is replaced", async () => {
+    vi.stubGlobal("fetch", head({ "content-length": "123", "last-modified": "Mon" }))
+    const before = await sourceKey(URL)
+    vi.stubGlobal("fetch", head({ "content-length": "456", "last-modified": "Tue" }))
+    const after = await sourceKey(URL)
+    expect(after.datasetId).not.toBe(before.datasetId)
+  })
+
+  it("still works when the server refuses the HEAD", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError("Failed to fetch")
+      })
+    )
+    const key = await sourceKey(URL)
+    expect(key.datasetId).toBe(makeDatasetId("stack.h5j", URL))
   })
 })

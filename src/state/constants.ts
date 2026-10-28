@@ -63,8 +63,10 @@ const C = {
 
   SETTINGS_OPENED: "SETTINGS_OPENED",
 
-  // How full storage may get before old volumes are discarded.
-  EVICTION_PERCENT_CHANGED: "EVICTION_PERCENT_CHANGED",
+  // The user's storage cap, in gigabytes.
+  STORAGE_LIMIT_CHANGED: "STORAGE_LIMIT_CHANGED",
+  // Whether to ask the browser to keep converted volumes even when the disk is low.
+  KEEP_WHEN_DISK_LOW_CHANGED: "KEEP_WHEN_DISK_LOW_CHANGED",
 } as const
 
 export default C

@@ -3,10 +3,12 @@ import type { ReactElement } from "react"
 import { Dialog } from "@/components/Dialog"
 import { formatBytes } from "@/lib/bytes"
 import {
-  EVICTION_PERCENT_MAX,
-  EVICTION_PERCENT_MIN,
-  storageBudget,
+  EXPIRY_DAYS,
+  QUOTA_SAFETY_SHARE,
+  STORAGE_LIMIT_GB_MAX,
+  STORAGE_LIMIT_GB_MIN,
 } from "@/lib/prefs"
+import type { StorageLimit } from "@/lib/prefs"
 
 /**
  * Settings and stored data, behind the gear.
@@ -36,9 +38,14 @@ export function SettingsDialog(props: {
   error: string | null
   onClearAll: () => void
   clearing: boolean
-  /** How full storage may get before old volumes are discarded, 5..100. */
-  evictionPercent: number
-  onEvictionPercentChange: (percent: number) => void
+  /** The user's storage cap, in gigabytes. */
+  limitGb: number
+  onLimitGbChange: (limitGb: number) => void
+  /** The limit actually in force, which the quota can hold below `limitGb`. */
+  limit: StorageLimit
+  /** Whether the user asked to keep converted volumes even when the disk is low. */
+  keepWhenDiskLow: boolean
+  onKeepWhenDiskLowChange: (keep: boolean) => void
 }): ReactElement {
   // Deleting every converted volume can discard hours of work, so it takes two clicks.
   // A second dialog on top of this one would be worse than a button that changes its
@@ -116,8 +123,8 @@ export function SettingsDialog(props: {
       <section className="settings-section">
         <h3>Storage</h3>
         <p>
-          {formatBytes(props.usage)} of {formatBytes(props.quota)} used
-          {props.persisted ? " · persisted" : " · not persisted"}
+          {formatBytes(props.usage)} used of a {formatBytes(props.limit.bytes)}{" "}
+          limit
         </p>
         {props.projected !== null ? (
           <p
@@ -128,37 +135,58 @@ export function SettingsDialog(props: {
             {overQuota ? " — more than the space left" : ""}
           </p>
         ) : null}
-        {/* A ceiling on how much of the browser's quota this app will occupy. Below
-            100 by default: the quota is a share of one disk that every other site is
-            drawing on too, and filling all of it is antisocial even where the browser
-            permits it. Low values are also the quickest way to exercise eviction
-            deliberately rather than waiting for a disk to fill. */}
+        {/* In gigabytes, because that is how anyone thinks about their disk. The browser's
+            quota is not offered as a setting: nobody can see it, it moves as the disk
+            fills, and each origin has its own. It still caps the limit quietly, and the
+            note below says so when it does. */}
         <p className="settings-field">
-          <label htmlFor="eviction-percent">Use up to</label>
+          <label htmlFor="storage-limit">Keep at most</label>
           <input
-            id="eviction-percent"
+            id="storage-limit"
             type="number"
-            min={EVICTION_PERCENT_MIN}
-            max={EVICTION_PERCENT_MAX}
-            step={5}
-            value={props.evictionPercent}
-            onChange={(event) =>
-              props.onEvictionPercentChange(Number(event.target.value))
-            }
-            title="Discard the least recently used volumes once storage passes this share of the browser's quota"
+            min={STORAGE_LIMIT_GB_MIN}
+            max={STORAGE_LIMIT_GB_MAX}
+            step={1}
+            value={props.limitGb}
+            onChange={(event) => {
+              // A blanked field is mid-edit, not a request for the default.
+              const value = Number(event.target.value)
+              if (event.target.value !== "" && Number.isFinite(value)) {
+                props.onLimitGbChange(value)
+              }
+            }}
+            title="Discard the least recently opened volumes once converted data passes this size"
           />
-          {/* The unit belongs to the number, so it must not be able to wrap away from
-              it -- "Use up to 80" on one line and "% of the quota" on the next reads as
-              two thoughts. The sentence that follows is a separate thought and gets its
-              own line. */}
-          <span className="settings-field-unit">
-            % of the quota (
-            {formatBytes(storageBudget(props.quota, props.evictionPercent))}).
-          </span>
+          <span className="settings-field-unit">GB of converted volumes.</span>
         </p>
+        {props.limit.reason === "quota" ? (
+          <p className="settings-note storage-warning">
+            Currently limited to {formatBytes(props.limit.bytes)} because disk space
+            is low: this app never uses more than{" "}
+            {Math.round(QUOTA_SAFETY_SHARE * 100)}% of the browser&apos;s quota (
+            {formatBytes(props.quota)}), which shrinks as the disk fills.
+          </p>
+        ) : null}
         <p className="settings-note">
-          Past this, the least recently used volumes are discarded.
+          Past the limit, the least recently opened volumes are discarded, and any not
+          opened for {EXPIRY_DAYS} days are removed. A change takes effect the next
+          time the app starts or converts a file.
         </p>
+
+        {/* Opt-in, because persisted storage is exempt from the browser's own cleanup
+            when the disk runs low -- and that cleanup is the only thing that ever clears
+            an origin this app is no longer opened on. */}
+        <label className="settings-toggle">
+          <input
+            type="checkbox"
+            checked={props.keepWhenDiskLow}
+            onChange={(event) =>
+              props.onKeepWhenDiskLowChange(event.target.checked)
+            }
+          />
+          Keep converted volumes even when the disk is low
+        </label>
+        <p className="settings-note">{persistenceNote(props)}</p>
 
         <button
           type="button"
@@ -207,4 +235,26 @@ export function SettingsDialog(props: {
       ) : null}
     </Dialog>
   )
+}
+
+/**
+ * What the persistence setting has actually done. The browser decides, not the app, and
+ * a grant cannot be withdrawn by the site -- so the checkbox alone would often be wrong.
+ */
+function persistenceNote(props: {
+  keepWhenDiskLow: boolean
+  persisted: boolean
+}): string {
+  if (props.keepWhenDiskLow) {
+    return props.persisted
+      ? "The browser has agreed not to clear them."
+      : "The browser declined. Chrome decides this itself, based on how the site is " +
+          "used -- for example, whether it is bookmarked or installed."
+  }
+  return props.persisted
+    ? "The browser has already granted this site persistent storage, and a site " +
+        "cannot give that up. To undo it, clear this site's data in Chrome's site " +
+        "settings."
+    : "Off: the browser may clear converted volumes if the disk gets low. They are " +
+        "converted again the next time they are opened."
 }

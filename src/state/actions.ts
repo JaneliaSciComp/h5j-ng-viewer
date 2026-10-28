@@ -70,7 +70,8 @@ export type Action =
   | { type: typeof C.CAMERA_APPLIED }
   | { type: typeof C.VIEW_FITTED; zoom: number }
   | { type: typeof C.SETTINGS_OPENED; open: boolean }
-  | { type: typeof C.EVICTION_PERCENT_CHANGED; percent: number }
+  | { type: typeof C.STORAGE_LIMIT_CHANGED; limitGb: number }
+  | { type: typeof C.KEEP_WHEN_DISK_LOW_CHANGED; keep: boolean }
 
 /**
  * How the ingest pipeline talks to the store. Deliberately not `React.Dispatch`:
@@ -248,7 +249,12 @@ export const settingsOpened = (open: boolean): Action => ({
   open,
 })
 
-export const evictionPercentChanged = (percent: number): Action => ({
-  type: C.EVICTION_PERCENT_CHANGED,
-  percent,
+export const storageLimitChanged = (limitGb: number): Action => ({
+  type: C.STORAGE_LIMIT_CHANGED,
+  limitGb,
+})
+
+export const keepWhenDiskLowChanged = (keep: boolean): Action => ({
+  type: C.KEEP_WHEN_DISK_LOW_CHANGED,
+  keep,
 })

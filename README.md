@@ -100,12 +100,35 @@ palette otherwise; `col` overrides either.
 the same as the mouse wheel over the XY view. Only depth changes; the in-plane position
 and the zoom stay where they are.
 
-**Memory**: how full the browser's storage is, with a hatched segment for what the
-conversion in flight still needs and a mark where old volumes start being discarded.
-Hover for the figures.
+**Memory**: how much of the storage limit is in use, with a hatched segment for what the
+conversion in flight still needs. Hover for the figures.
 
-**Gear**: source URL, storage used and available, "delete all cached data", and the
-per-channel intensity measurements and post-conversion probe results.
+**Gear**: source URL, storage used against the limit, the storage settings, "delete all
+cached data", and the per-channel intensity measurements and post-conversion probe
+results.
+
+### Storage
+
+Converted volumes are large (an 11 MB H5J becomes roughly 1.3 GB), so the app keeps
+them within a limit:
+
+- **A cap in gigabytes**, 20 GB by default, set in Settings.
+- **Never more than half of the browser's quota.** The quota shrinks as the disk fills,
+  so on a nearly full disk this takes over from the cap; Settings says when it has.
+- **Trimmed every time the app opens**, not only when a new file needs room: unfinished
+  leftovers first, then volumes not opened for 14 days, then the least recently opened
+  until within the limit.
+- **Volumes in use are never removed**, including one on screen or converting in another
+  tab of the same site.
+
+Storage is **not** marked persistent unless you tick "Keep converted volumes even when
+the disk is low" in Settings. Left unpersisted, the browser can clear the app's data
+itself when the disk runs low. That's the only thing that ever cleans up an origin the
+app is no longer opened on.
+
+Each origin (`http://localhost:3000`, `https://<host>:3000`, a deployment) keeps its own
+separate store, and the gear only sees its own. To see or clear all of them, sort by
+data stored at `chrome://settings/content/all`.
 
 Every control applies immediately and there is nothing to confirm. Changes are surgical:
 they reach the live Neuroglancer layer through its own accessors, so adjusting a color

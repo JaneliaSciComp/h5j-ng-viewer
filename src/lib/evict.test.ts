@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { applyPlan, planEviction } from "@/lib/evict"
+import { applyPlan, planEviction, planTrim } from "@/lib/evict"
 import type { DatasetRecord } from "@/lib/evict"
 
 const GB = 1024 ** 3
@@ -160,5 +160,82 @@ describe("applyPlan", () => {
     })
     expect(plan.evict.length).toBeGreaterThan(0)
     expect(applyPlan(plan)).toEqual([])
+  })
+})
+
+describe("planTrim", () => {
+  const DAY = 24 * 60 * 60 * 1000
+  const NOW = 100 * DAY
+  const trim = (
+    datasets: DatasetRecord[],
+    opts: { limit?: number; keep?: string[] } = {}
+  ) =>
+    planTrim(datasets, {
+      limit: opts.limit ?? 100 * GB,
+      now: NOW,
+      maxAgeMs: 14 * DAY,
+      keep: opts.keep,
+    })
+
+  it("removes nothing when under the limit and nothing is stale", () => {
+    const plan = trim([record("a", { lastUsedAt: NOW - DAY })])
+    expect(plan).toEqual({ evict: [], reclaimed: 0 })
+  })
+
+  it("always sweeps debris, even with room to spare", () => {
+    // A conversion that never finished cannot be displayed by anything.
+    const plan = trim([
+      record("fresh", { lastUsedAt: NOW }),
+      record("debris", { complete: false, lastUsedAt: 0 }),
+    ])
+    expect(plan.evict).toEqual(["debris"])
+  })
+
+  it("expires volumes not opened within the age limit", () => {
+    const plan = trim([
+      record("recent", { lastUsedAt: NOW - 2 * DAY }),
+      record("stale", { lastUsedAt: NOW - 30 * DAY }),
+    ])
+    expect(plan.evict).toEqual(["stale"])
+  })
+
+  it("then evicts least recently used until within the limit", () => {
+    const plan = trim(
+      [
+        record("newest", { lastUsedAt: NOW - 1 * DAY }),
+        record("oldest", { lastUsedAt: NOW - 3 * DAY }),
+        record("middle", { lastUsedAt: NOW - 2 * DAY }),
+      ],
+      { limit: 1.5 * GB }
+    )
+    expect(plan.evict).toEqual(["oldest", "middle"])
+    expect(plan.reclaimed).toBe(2 * GB)
+  })
+
+  it("never touches what it is told to keep, however old or incomplete", () => {
+    // The volume on screen in any tab, and a conversion another tab is still writing --
+    // which is incomplete, so it would otherwise be swept as debris.
+    const plan = trim(
+      [
+        record("shown", { lastUsedAt: 0 }),
+        record("converting", { complete: false, lastUsedAt: 0 }),
+        record("spare", { lastUsedAt: NOW - DAY }),
+      ],
+      { limit: 0, keep: ["shown", "converting"] }
+    )
+    expect(plan.evict).toEqual(["spare"])
+  })
+
+  it("counts kept volumes toward the total, and gets as far as it can", () => {
+    // Not all-or-nothing like planEviction: the kept volume alone is over the limit, so
+    // everything else goes even though the limit still is not met.
+    const plan = trim(
+      [
+        record("kept", { bytes: 5 * GB, lastUsedAt: NOW }),
+        record("other", { lastUsedAt: NOW - DAY }),
+      ],
+      { limit: 2 * GB, keep: ["kept"] }
+    )
+    expect(plan.evict).toEqual(["other"])
   })
 })

@@ -355,6 +355,24 @@ export async function storageEstimate(): Promise<{
 }
 
 /** Ask the browser to make storage persistent, reducing eviction risk. Never throws. */
+/**
+ * Whether the browser has already granted persistent storage, without asking for it.
+ * A grant cannot be given up by the site, so this can stay true after the user turns
+ * the setting off -- the UI tells them how to clear it.
+ */
+export async function isPersisted(): Promise<boolean> {
+  try {
+    return await navigator.storage.persisted()
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Ask the browser to exempt this origin's storage from its cleanup under disk pressure.
+ * Only called when the user has opted in: Chrome grants or refuses silently, based on how
+ * the site is used, so asking by default would decide about their disk without them.
+ */
 export async function requestPersist(): Promise<boolean> {
   try {
     return await navigator.storage.persist()

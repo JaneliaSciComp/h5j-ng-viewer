@@ -13,7 +13,9 @@ import {
   removeDataset,
   writeJson,
 } from "@/lib/opfs"
+import { planTrim } from "@/lib/evict"
 import type { DatasetRecord } from "@/lib/evict"
+import { datasetsInUse } from "@/lib/locks"
 import type { ChannelStats } from "@/lib/stats"
 import type { H5JInfo, ResolvedDims } from "@/types"
 
@@ -194,4 +196,37 @@ export async function evictDatasets(
     onRemoved?.(removed, ids.length)
   }
   return removed
+}
+
+/**
+ * Bring storage back within its limit: remove leftover debris, volumes not opened for
+ * `maxAgeMs`, and then the least recently opened until the total fits `limit`.
+ *
+ * Sized from the datasets' own records rather than `navigator.storage.estimate()`, which
+ * has been seen to be wrong by a factor of forty on a real machine. Anything another tab
+ * is using is skipped, as is everything in `keep`. Never throws: trimming is upkeep, and
+ * failing at it is not a reason to stop anyone viewing their data.
+ */
+export async function trimDatasets(opts: {
+  limit: number
+  now: number
+  maxAgeMs: number
+  keep: string[]
+}): Promise<{ removed: number; reclaimed: number }> {
+  try {
+    const [records, inUse] = await Promise.all([
+      listDatasetRecords(),
+      datasetsInUse(),
+    ])
+    const plan = planTrim(records, {
+      limit: opts.limit,
+      now: opts.now,
+      maxAgeMs: opts.maxAgeMs,
+      keep: [...opts.keep, ...inUse],
+    })
+    const removed = await evictDatasets(plan.evict)
+    return { removed, reclaimed: removed > 0 ? plan.reclaimed : 0 }
+  } catch {
+    return { removed: 0, reclaimed: 0 }
+  }
 }
