@@ -35,7 +35,8 @@ import type { DatasetMarker } from "@/lib/datasets"
 import { applyPlan, planEviction } from "@/lib/evict"
 import { removeDataset, storageEstimate, writeJson } from "@/lib/opfs"
 import { LAYOUT_VERSION } from "@/lib/paths"
-import { storageBudget } from "@/lib/prefs"
+import { datasetsInUse, holdDataset } from "@/lib/locks"
+import { storageLimit } from "@/lib/prefs"
 import { levelIndexPath, zarrayPath, zattrsPath, zgroupPath } from "@/lib/paths"
 import { describeProbe, probeDataset } from "@/lib/verify"
 import {
@@ -63,13 +64,20 @@ import type {
   Vec3,
 } from "@/types"
 import type { H5JFile } from "@janelia/web-h5j-loader"
+import { basenameOf } from "@/lib/url"
 import type { LaunchParams } from "@/lib/url"
 
 export interface IngestParams {
   file: H5JFile
   info: H5JInfo
-  /** Display name of the source, also the seed for the dataset id. */
+  /** Display name of the source. */
   sourceName: string
+  /**
+   * Where to write the conversion, from `sourceKey`. Passed in rather than derived here,
+   * because the reuse check looks the dataset up by the same id: derived in two places,
+   * the two drifted apart, and a reload never found the volume it had just converted.
+   */
+  datasetId: string
   /**
    * How each channel is rendered when the viewer mounts. Passed in rather than derived
    * here, because the store owns it: the user may have changed something between the
@@ -78,8 +86,8 @@ export interface IngestParams {
   controls: ChannelControls
   /** Origin the service worker serves the dataset from, i.e. `location.origin`. */
   origin: string
-  /** How full storage may get before old volumes are evicted to make room. */
-  evictionPercent: number
+  /** The user's storage cap in gigabytes; see `storageLimit` for what is enforced. */
+  storageLimitGb: number
   /** Color, position and zoom overrides from the address bar. */
   launch: LaunchParams
   /** Where this file came from, recorded with the dataset. Null for a dropped file. */
@@ -109,14 +117,24 @@ export async function ingestH5J(
   params: IngestParams,
   dispatch: Dispatch
 ): Promise<void> {
+  // Held for the whole conversion, so another tab's startup trim sees this half-written
+  // tree as in use rather than as debris. Released however the conversion ends; by then
+  // the viewer, if it mounted, holds its own lock on the same dataset.
+  const release = holdDataset(params.datasetId)
+  try {
+    await convert(params, dispatch)
+  } finally {
+    release()
+  }
+}
+
+async function convert(params: IngestParams, dispatch: Dispatch): Promise<void> {
   const { file, info, sourceName, controls, origin, launch } = params
-  const { sourceUrl, mountedDatasetId, evictionPercent } = params
+  const { sourceUrl, mountedDatasetId, storageLimitGb } = params
   const names = info.channels.map((channel) => channel.name)
   if (names.length === 0) return
 
-  // The full URL, not the basename the bar shows: the basename has had its path
-  // stripped, so two folders holding a file of the same name would produce one key.
-  const datasetId = makeDatasetId(sourceName, sourceUrl ?? sourceName)
+  const { datasetId } = params
   const datasetName = sourceName || datasetId
   const order = conversionOrder(controls.visible, names.length)
 
@@ -138,7 +156,7 @@ export async function ingestH5J(
     keep: [datasetId, mountedDatasetId].filter(
       (id): id is string => id !== null
     ),
-    evictionPercent,
+    storageLimitGb,
     dispatch,
   })
   if (shortfall) {
@@ -476,7 +494,7 @@ function bytesWrittenFrom(message: string): number | undefined {
 async function makeRoom(opts: {
   needed: number
   keep: string[]
-  evictionPercent: number
+  storageLimitGb: number
   dispatch: Dispatch
 }): Promise<string | null> {
   const { usage, quota } = await storageEstimate().catch(() => ({
@@ -487,11 +505,11 @@ async function makeRoom(opts: {
   // would block a conversion that might well have fitted.
   if (quota <= 0) return null
 
-  // Free against the configured budget, not against the whole quota. That is what makes
-  // eviction start at the threshold rather than at the cliff: the app keeps itself
-  // inside its share, leaving the rest for other sites drawing on the same disk, and
-  // leaving a conversion that runs over its projection somewhere to go.
-  const budget = storageBudget(quota, opts.evictionPercent)
+  // Free against the storage limit, not against the whole quota. That is what makes
+  // eviction start at the limit rather than at the cliff: the app keeps itself inside
+  // its share, leaving the rest of the disk alone, and leaving a conversion that runs
+  // over its projection somewhere to go.
+  const budget = storageLimit(quota, opts.storageLimitGb).bytes
   const free = Math.max(0, budget - usage)
   if (opts.needed <= free) return null
 
@@ -500,17 +518,21 @@ async function makeRoom(opts: {
   // long enough to look like a hang.
   opts.dispatch(ingestPhase("evicting", "checking what is stored"))
   opts.dispatch(ingestProgress(null))
-  const records = await listDatasetRecords().catch(() => [])
+  const [records, inUse] = await Promise.all([
+    listDatasetRecords().catch(() => []),
+    datasetsInUse(),
+  ])
+  // Another tab's volume or conversion is as untouchable as this tab's own.
   const plan = planEviction(records, {
     needed: opts.needed,
     free,
-    keep: opts.keep,
+    keep: [...opts.keep, ...inUse],
   })
 
   const advice =
-    `Open Settings to see what is stored, and to raise the storage limit if you want ` +
-    `this app to use more of the browser's quota. The quota is itself a fraction of ` +
-    `the machine's free disk, so freeing space on the machine raises it too.`
+    `Open Settings to raise the storage limit if you want this app to keep more. The ` +
+    `app also never uses more than half of the browser's quota, and the quota shrinks ` +
+    `as the disk fills, so freeing space on the machine raises that ceiling too.`
 
   if (!applyPlan(plan).length) {
     return (
@@ -728,6 +750,26 @@ function hashIdentity(identity: string): string {
  * For a dropped file there is no URL, so name, size and modification time stand in.
  */
 const IDENTITY_HEAD_TIMEOUT_MS = 3000
+
+/** A source's display name and the dataset id its conversion lives under. */
+export interface SourceKey {
+  name: string
+  datasetId: string
+}
+
+/**
+ * The one place a source's dataset id is worked out. Both the reuse check and the
+ * conversion take it from here, so the lookup always finds what the conversion wrote.
+ *
+ * The id is keyed on the source's identity -- the URL plus its size and modification
+ * date when the server says them -- so a file replaced at the same URL is converted
+ * afresh rather than shown stale. The old copy is never opened again and ages out
+ * through the startup trim.
+ */
+export async function sourceKey(src: File | string): Promise<SourceKey> {
+  const name = basenameOf(typeof src === "string" ? src : src.name)
+  return { name, datasetId: makeDatasetId(name, await sourceIdentity(src)) }
+}
 
 export async function sourceIdentity(src: File | string): Promise<string> {
   if (typeof src !== "string") {

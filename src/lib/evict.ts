@@ -83,6 +83,51 @@ function compare(a: DatasetRecord, b: DatasetRecord): number {
 }
 
 /**
+ * What to discard so that storage stays within its limit, run at startup rather than
+ * only when a new conversion needs room.
+ *
+ * Three kinds of dataset go, in this order:
+ *
+ *   1. debris -- a conversion that never finished, which nothing can display;
+ *   2. volumes not opened for longer than `maxAgeMs`;
+ *   3. the least recently opened of the rest, until the total is within `limit`.
+ *
+ * Unlike `planEviction` this is not all-or-nothing. It is not making room for anything,
+ * just keeping the cache to its size, so getting part of the way is still worth doing --
+ * even when the datasets in `keep` alone are over the limit.
+ *
+ * `keep` holds what must survive whatever its age: the volume on screen in any tab and
+ * any conversion in progress, which is debris by the rule above until it finishes.
+ */
+export function planTrim(
+  datasets: DatasetRecord[],
+  opts: {
+    limit: number
+    now: number
+    maxAgeMs: number
+    keep?: Iterable<string>
+  }
+): { evict: string[]; reclaimed: number } {
+  const keep = new Set(opts.keep ?? [])
+  let total = datasets.reduce((sum, dataset) => sum + Math.max(0, dataset.bytes), 0)
+
+  const evict: string[] = []
+  let reclaimed = 0
+  // `compare` puts debris first and then complete volumes oldest first, so the expired
+  // ones lead the complete group. Once a volume is neither debris, nor expired, nor
+  // needed to get under the limit, every volume after it is newer and safe too.
+  for (const dataset of datasets.filter((d) => !keep.has(d.id)).sort(compare)) {
+    const expired = opts.now - dataset.lastUsedAt > opts.maxAgeMs
+    if (dataset.complete && !expired && total <= opts.limit) break
+    const bytes = Math.max(0, dataset.bytes)
+    evict.push(dataset.id)
+    reclaimed += bytes
+    total -= bytes
+  }
+  return { evict, reclaimed }
+}
+
+/**
  * The plan a caller should actually carry out: the same one, unless it would not have
  * been enough, in which case nothing.
  */

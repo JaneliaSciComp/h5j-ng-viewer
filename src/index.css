@@ -116,18 +116,6 @@ body {
   overflow: hidden;
 }
 
-/* A hairline where eviction begins, drawn over the fill so it stays visible whether the
-   bar has reached it or not. */
-.bar-memory-track::after {
-  content: "";
-  position: absolute;
-  left: var(--eviction-mark, 100%);
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: var(--text-dim);
-}
-
 .bar-memory-used {
   background: var(--accent);
 }
@@ -766,4 +754,18 @@ legend {
 .storage-warning {
   color: var(--warn);
   font-weight: 600;
+}
+
+/* A checkbox setting: the box and its sentence read as one control. Its own class
+ * because `.settings-field input` sizes number inputs and would stretch the box. */
+.settings-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 10px;
+  cursor: pointer;
+}
+
+.settings-toggle input {
+  margin: 0;
 }

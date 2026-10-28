@@ -24,7 +24,11 @@ import {
   stepForSamples,
 } from "@/lib/projection"
 import { applyColorOverrides } from "@/lib/ingest"
-import { clampEvictionPercent, loadEvictionPercent } from "@/lib/prefs"
+import {
+  clampStorageLimitGb,
+  loadKeepWhenDiskLow,
+  loadStorageLimitGb,
+} from "@/lib/prefs"
 
 export interface AppState {
   /**
@@ -92,11 +96,13 @@ export interface AppState {
     persisted: boolean
     clearing: boolean
     /**
-     * How full storage may get before old volumes are discarded, as a percentage of
-     * the quota. A preference rather than session state, so it is seeded from
+     * The most converted data to keep, in gigabytes. What is enforced can be lower --
+     * see `storageLimit`. A preference rather than session state, so it is seeded from
      * localStorage and written back on change.
      */
-    evictionPercent: number
+    limitGb: number
+    /** Whether the user asked to keep converted volumes even when the disk is low. */
+    keepWhenDiskLow: boolean
   }
 
   /**
@@ -168,7 +174,8 @@ export const initialState: AppState = {
     quota: 0,
     persisted: false,
     clearing: false,
-    evictionPercent: loadEvictionPercent(),
+    limitGb: loadStorageLimitGb(),
+    keepWhenDiskLow: loadKeepWhenDiskLow(),
   },
   camera: {
     position: null,
@@ -516,15 +523,21 @@ export function reducer(state: AppState, action: Action): AppState {
         },
       }
 
-    case C.EVICTION_PERCENT_CHANGED:
+    case C.STORAGE_LIMIT_CHANGED:
       return {
         ...state,
         storage: {
           ...state.storage,
-          // Clamped here rather than trusted from the input, so a typed-in 5000 or a
-          // blanked field cannot turn into a budget of five thousand percent or NaN.
-          evictionPercent: clampEvictionPercent(action.percent),
+          // Clamped here rather than trusted from the input, so a typed-in 0 or a
+          // blanked field cannot turn into a limit of nothing or NaN.
+          limitGb: clampStorageLimitGb(action.limitGb),
         },
+      }
+
+    case C.KEEP_WHEN_DISK_LOW_CHANGED:
+      return {
+        ...state,
+        storage: { ...state.storage, keepWhenDiskLow: action.keep },
       }
 
     case C.SETTINGS_OPENED:

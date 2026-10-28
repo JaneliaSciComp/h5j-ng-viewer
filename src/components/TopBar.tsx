@@ -4,6 +4,7 @@ import { SliceSlider } from "@/components/SliceSlider"
 import { ProgressText } from "@/components/ProgressText"
 import { MemoryBar } from "@/components/MemoryBar"
 import { SourceName } from "@/components/SourceName"
+import type { StorageLimit } from "@/lib/prefs"
 import type { Phase } from "@/state/actions"
 import type { ChannelInfo } from "@/types"
 
@@ -45,7 +46,8 @@ export function TopBar(props: {
   /** Projected size of the conversion in flight, or null when nothing is pending. */
   projected: number | null
   persisted: boolean
-  evictionPercent: number
+  /** The storage limit in force, and which rule set it. */
+  storageLimit: StorageLimit
   onToggleVisibility: (index: number) => void
   onColorChange: (index: number, color: string) => void
   onOpacityChange: (index: number, opacity: number) => void
@@ -99,7 +101,7 @@ export function TopBar(props: {
         quota={props.quota}
         projected={props.projected}
         persisted={props.persisted}
-        evictionPercent={props.evictionPercent}
+        limit={props.storageLimit}
       />
 
       <button
