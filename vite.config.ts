@@ -41,6 +41,11 @@ const shims = {
   global: "globalThis",
 }
 
+// The app's version, shown beside the gear. Read from package.json at build time and
+// substituted as a literal, so the bundle carries the one string rather than the whole
+// manifest. Top-level `define` only: it is our own code that reads it, not a dependency.
+const { version: appVersion } = require("./package.json") as { version: string }
+
 const crossOriginIsolation = {
   "Cross-Origin-Opener-Policy": "same-origin",
   "Cross-Origin-Embedder-Policy": "require-corp",
@@ -67,7 +72,7 @@ export default defineConfig({
   resolve: {
     alias: { "@": path.resolve(import.meta.dirname, "./src") },
   },
-  define: shims,
+  define: { ...shims, __APP_VERSION__: JSON.stringify(appVersion) },
   optimizeDeps: {
     // Both are CommonJS; prebundling is what makes their named-export interop work.
     // `jsfive` is deliberately absent: the loader imports it as `jsfive/dist`, which
