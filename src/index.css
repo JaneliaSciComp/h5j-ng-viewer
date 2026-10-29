@@ -769,3 +769,12 @@ legend {
 .settings-toggle input {
   margin: 0;
 }
+
+/* The app's version, shown next to the gear icon. */
+.bar-version {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}

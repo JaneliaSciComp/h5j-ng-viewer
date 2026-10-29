@@ -122,6 +122,10 @@ export function TopBar(props: {
           />
         </svg>
       </button>
+
+      <span className="bar-version" title={`h5j-ng-viewer version ${__APP_VERSION__}`}>
+        v{__APP_VERSION__}
+      </span>
     </header>
   )
 }
